@@ -114,6 +114,8 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion::datasource::physical_plan::parquet::plan_to_parquet;
+use datafusion::execution::TaskContext;
 use url::Url;
 
 // For clippy error on type_complexity.
@@ -1445,6 +1447,11 @@ impl PhysicalPlanner {
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
+            },
+            OpStruct::WriteFiles(w) => {
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let path = w.path.clone();
+                plan_to_parquet(Arc::new(TaskContext::default()), child, path, None);
             }
         }
     }

@@ -47,6 +47,7 @@ message Operator {
     HashJoin hash_join = 109;
     Window window = 110;
     NativeScan native_scan = 111;
+    WriteFiles write_files = 112;
   }
 }
 
@@ -132,6 +133,10 @@ message ShuffleWriter {
   string output_index_file = 4;
   CompressionCodec codec = 5;
   int32 compression_level = 6;
+}
+
+message WriteFiles {
+  string path = 1;
 }
 
 enum AggregateMode {
