@@ -20,7 +20,7 @@ use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
     spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkChrFunc,
+    SparkChrFunc
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -33,6 +33,7 @@ use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
+use crate::try_ops::spark_try_element_at;
 
 macro_rules! make_comet_scalar_udf {
     ($name:expr, $func:ident, $data_type:ident) => {{
@@ -144,6 +145,10 @@ pub fn create_comet_physical_fun(
         "array_repeat" => {
             let func = Arc::new(spark_array_repeat);
             make_comet_scalar_udf!("array_repeat", func, without data_type)
+        }
+        "try_element_at" => {
+            let func = Arc::new(spark_try_element_at);
+            make_comet_scalar_udf!("try_element_at", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(

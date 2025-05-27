@@ -52,6 +52,7 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 mod conditional_funcs;
 mod conversion_funcs;
 mod math_funcs;
+mod try_ops;
 
 pub use array_funcs::*;
 pub use bitwise_funcs::*;
