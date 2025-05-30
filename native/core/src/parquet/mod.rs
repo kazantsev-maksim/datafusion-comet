@@ -25,7 +25,7 @@ pub mod parquet_exec;
 pub mod parquet_support;
 pub mod read;
 pub mod schema_adapter;
-mod parquet_sink_exec;
+pub mod parquet_sink_exec;
 
 use std::task::Poll;
 use std::{boxed::Box, ptr::NonNull, sync::Arc};
@@ -52,6 +52,7 @@ use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::parquet_sink_exec::init_parquet_sink_exec;
 use crate::parquet::parquet_support::prepare_object_store;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};

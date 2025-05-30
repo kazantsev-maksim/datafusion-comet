@@ -4,6 +4,7 @@ import java.util.Objects
 
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.types.StructType
 
 case class CometParquetWriteFilesExec(
     override val originalPlan: SparkPlan,

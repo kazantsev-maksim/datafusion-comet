@@ -137,6 +137,7 @@ message ShuffleWriter {
 
 message WriteFiles {
   string path = 1;
+  repeated SparkStructField output_schema = 2;
 }
 
 enum AggregateMode {

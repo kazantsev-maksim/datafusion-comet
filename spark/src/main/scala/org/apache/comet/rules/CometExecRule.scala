@@ -35,12 +35,12 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
-
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
+import org.apache.spark.sql.catalyst.catalog.BucketSpec
 
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
@@ -323,7 +323,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: CoalesceExec if !op.children.forall(isCometNative) =>
         op
 
-      case w @ WriteFilesExec(child, fileFormat, partitionColumns, _, options, _) =>
+      case w @ WriteFilesExec(child, fileFormat, partitionColumns, a, options, b) =>
         if (fileFormat.isInstanceOf[ParquetFileFormat]) {
           QueryPlanSerde
             .operator2Proto(w)
