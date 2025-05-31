@@ -24,25 +24,29 @@ import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNu
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCoalesceExec, CometCollectLimitExec, CometExec, CometExpandExec, CometFilterExec, CometGlobalLimitExec, CometHashAggregateExec, CometHashJoinExec, CometLocalLimitExec, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec, CometUnionExec, CometWindowExec, SerializedPlan}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.{CoalesceExec, CollectLimitExec, ExpandExec, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, SortExec, SparkPlan, TakeOrderedAndProjectExec, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.WriteFilesExec
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
+
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
-import org.apache.comet.CometSparkSessionExtensions._
+import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.spark.sql.catalyst.catalog.BucketSpec
 
+/**
+ * Spark physical optimizer rule for replacing Spark operators with Comet operators.
+ */
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
+
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
       case s: ShuffleExchangeExec
@@ -74,41 +78,63 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   /**
    * Tries to transform a Spark physical plan into a Comet plan.
    *
-   * This rule traverses bottom-up from the original Spark plan and for each plan node, there are
-   * a few cases to consider:
+   * This rule traverses bottom-up from the original Spark plan and for each plan node, there
+   * are a few cases to consider:
    *
-   *   1. The child(ren) of the current node `p` cannot be converted to native In this case, we'll
-   *      simply return the original Spark plan, since Comet native execution cannot start from an
-   *      arbitrary Spark operator (unless it is special node such as scan or sink such as shuffle
-   *      exchange, union etc., which are wrapped by `CometScanWrapper` and `CometSinkPlaceHolder`
-   *      respectively).
+   * 1. The child(ren) of the current node `p` cannot be converted to native
+   *   In this case, we'll simply return the original Spark plan, since Comet native
+   *   execution cannot start from an arbitrary Spark operator (unless it is special node
+   *   such as scan or sink such as shuffle exchange, union etc., which are wrapped by
+   *   `CometScanWrapper` and `CometSinkPlaceHolder` respectively).
    *
-   * 2. The child(ren) of the current node `p` can be converted to native There are two sub-cases
-   * for this scenario: 1) This node `p` can also be converted to native. In this case, we'll
-   * create a new native Comet operator for `p` and connect it with its previously converted
-   * child(ren); 2) This node `p` cannot be converted to native. In this case, similar to 1)
-   * above, we simply return `p` as it is. Its child(ren) would still be native Comet operators.
+   * 2. The child(ren) of the current node `p` can be converted to native
+   *   There are two sub-cases for this scenario: 1) This node `p` can also be converted to
+   *   native. In this case, we'll create a new native Comet operator for `p` and connect it with
+   *   its previously converted child(ren); 2) This node `p` cannot be converted to native. In
+   *   this case, similar to 1) above, we simply return `p` as it is. Its child(ren) would still
+   *   be native Comet operators.
    *
    * After this rule finishes, we'll do another pass on the final plan to convert all adjacent
-   * Comet native operators into a single native execution block. Please see where `convertBlock`
-   * is called below.
+   * Comet native operators into a single native execution block. Please see where
+   * `convertBlock` is called below.
    *
    * Here are a few examples:
    *
-   * Scan ======> CometScan \| | Filter CometFilter \| | HashAggregate CometHashAggregate \| |
-   * Exchange CometExchange \| | HashAggregate CometHashAggregate \| | UnsupportedOperator
-   * UnsupportedOperator
+   *     Scan                       ======>             CometScan
+   *      |                                                |
+   *     Filter                                         CometFilter
+   *      |                                                |
+   *     HashAggregate                                  CometHashAggregate
+   *      |                                                |
+   *     Exchange                                       CometExchange
+   *      |                                                |
+   *     HashAggregate                                  CometHashAggregate
+   *      |                                                |
+   *     UnsupportedOperator                            UnsupportedOperator
    *
    * Native execution doesn't necessarily have to start from `CometScan`:
    *
-   * Scan =======> CometScan \| | UnsupportedOperator UnsupportedOperator \| | HashAggregate
-   * HashAggregate \| | Exchange CometExchange \| | HashAggregate CometHashAggregate \| |
-   * UnsupportedOperator UnsupportedOperator
+   *     Scan                       =======>            CometScan
+   *      |                                                |
+   *     UnsupportedOperator                            UnsupportedOperator
+   *      |                                                |
+   *     HashAggregate                                  HashAggregate
+   *      |                                                |
+   *     Exchange                                       CometExchange
+   *      |                                                |
+   *     HashAggregate                                  CometHashAggregate
+   *      |                                                |
+   *     UnsupportedOperator                            UnsupportedOperator
    *
    * A sink can also be Comet operators other than `CometExchange`, for instance `CometUnion`:
    *
-   * Scan Scan =======> CometScan CometScan \| | | | Filter Filter CometFilter CometFilter \| | |
-   * \| Union CometUnion \| | Project CometProject
+   *     Scan   Scan                =======>          CometScan CometScan
+   *      |      |                                       |         |
+   *     Filter Filter                                CometFilter CometFilter
+   *      |      |                                       |         |
+   *        Union                                         CometUnion
+   *          |                                               |
+   *        Project                                       CometProject
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
@@ -131,8 +157,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
     plan.transformUp {
       // Fully native scan for V1
-      case scan: CometScanExec
-          if COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
@@ -322,20 +347,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op: CoalesceExec if !op.children.forall(isCometNative) =>
         op
-
-      case w @ WriteFilesExec(child, fileFormat, partitionColumns, a, options, b) =>
-        if (fileFormat.isInstanceOf[ParquetFileFormat]) {
-          QueryPlanSerde
-            .operator2Proto(w)
-            .map { nativeOp =>
-              val cometOp =
-                CometParquetWriteFilesExec(w, w.output, child, partitionColumns, options)
-              CometSinkPlaceHolder(nativeOp, w, cometOp)
-            }
-            .getOrElse(w)
-        } else {
-          w
-        }
 
       case s: TakeOrderedAndProjectExec
           if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
@@ -611,6 +622,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
+    val newPlan = _apply(plan)
+    if (showTransformations) {
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+    }
+    newPlan
+  }
+
+  private def _apply(plan: SparkPlan): SparkPlan = {
     // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
     // enabled.
     if (isANSIEnabled(conf)) {

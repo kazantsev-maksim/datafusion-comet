@@ -92,6 +92,9 @@ message NativeScan {
   repeated SparkFilePartition file_partitions = 7;
   repeated int64 projection_vector = 8;
   string session_timezone = 9;
+  repeated spark.spark_expression.Expr default_values = 10;
+  repeated int64 default_values_indexes = 11;
+  bool case_sensitive = 12;
 }
 
 message Projection {
@@ -133,6 +136,7 @@ message ShuffleWriter {
   string output_index_file = 4;
   CompressionCodec codec = 5;
   int32 compression_level = 6;
+  bool tracing_enabled = 7;
 }
 
 message WriteFiles {
