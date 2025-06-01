@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -53,7 +53,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, PartitionColumn, PartitionFields}
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -2404,6 +2404,29 @@ object QueryPlanSerde extends Logging with CometExprShim {
           Some(result.setExpand(expandBuilder).build())
         } else {
           withInfo(op, allProjExprs: _*)
+          None
+        }
+
+      case WriteFilesExec(child, _, partitionColumns, _, _, _) =>
+        val partitionColumnsExpr = partitionColumns.map { attr =>
+          val serializedDataType = serializeDataType(attr.dataType)
+          serializedDataType.map { dataType =>
+            PartitionColumn
+              .newBuilder()
+              .setName(attr.name)
+              .setDataType(dataType)
+              .build()
+          }
+        }
+        val outputSchemaExpr = schema2Proto(child.schema.fields)
+        assert(outputSchemaExpr.length == child.schema.fields.length)
+        if (partitionColumnsExpr.forall(_.isDefined)) {
+          val writeFilesExpr = OperatorOuterClass.WriteFiles
+            .newBuilder()
+            .addAllPartitionColumns(partitionColumnsExpr.map(_.get).asJava)
+            .addAllOutputSchema(outputSchemaExpr.toIterable.asJava)
+          Some(result.setWriteFiles(writeFilesExpr).build())
+        } else {
           None
         }
 

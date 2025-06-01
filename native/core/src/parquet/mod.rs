@@ -44,6 +44,7 @@ use jni::{
     },
 };
 
+
 use self::util::jni::TypePromotionInfo;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::ExecutionError;
@@ -52,7 +53,6 @@ use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::parquet_exec::init_datasource_exec;
-use crate::parquet::parquet_sink_exec::init_parquet_sink_exec;
 use crate::parquet::parquet_support::prepare_object_store;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};

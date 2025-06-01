@@ -86,6 +86,8 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::parquet_sink_exec::init_parquet_sink_exec;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -115,11 +117,7 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use datafusion::datasource::physical_plan::parquet::plan_to_parquet;
-use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::TaskContext;
 use url::Url;
-use crate::parquet::parquet_sink_exec::init_parquet_sink_exec;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -1501,13 +1499,13 @@ impl PhysicalPlanner {
             OpStruct::WriteFiles(write) => {
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let output_schema: SchemaRef = convert_spark_types_to_arrow_schema(write.output_schema.as_slice());
-                let object_store_url = ObjectStoreUrl::parse("")?;
+                let object_store_url = ObjectStoreUrl::parse(write.path.to_string())?;
 
-                let parquet_sin_exec = init_parquet_sink_exec(child, object_store_url, output_schema);
+                let parquet_sink_exec = init_parquet_sink_exec(child.native_plan.clone(), object_store_url, output_schema)?;
 
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, parquet_sin_exec, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, parquet_sink_exec, vec![])),
                 ))
             }
         }

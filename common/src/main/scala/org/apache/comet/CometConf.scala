@@ -631,6 +631,13 @@ object CometConf extends ShimCometConf {
       .longConf
       .createWithDefault(3000L)
 
+  val COMET_WRITE_PARQUET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.parquet.enabled")
+      .doc(
+        "A boolean flag that enables (true) or disables (false) use native logic to write parquet files.")
+      .booleanConf
+      .createWithDefault(false)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

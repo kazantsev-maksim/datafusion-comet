@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
+use crate::execution::operators::ExecutionError;
 use arrow::datatypes::SchemaRef;
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::file_format::parquet::ParquetSink;
@@ -24,7 +24,7 @@ use datafusion::datasource::physical_plan::{FileGroup, FileSinkConfig};
 use datafusion::datasource::sink::DataSinkExec;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::ExecutionPlan;
-use crate::execution::operators::ExecutionError;
+use std::sync::Arc;
 
 const PARQUET_EXTENSION: &'static str = "parquet";
 
