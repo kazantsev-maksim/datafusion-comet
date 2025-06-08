@@ -37,8 +37,11 @@ use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
+use std::time::Duration;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
+
+use super::objectstore;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -252,53 +255,52 @@ fn cast_struct_to_struct(
 
 /// Cast a map type to another map type. The same as arrow-cast except we recursively call our own
 /// cast_array
-pub(crate) fn cast_map_values(
+fn cast_map_values(
     from: &MapArray,
     to_data_type: &DataType,
     parquet_options: &SparkParquetOptions,
     to_ordered: bool,
 ) -> Result<ArrayRef, DataFusionError> {
-    let entries_field = if let DataType::Map(entries_field, _) = to_data_type {
-        entries_field
-    } else {
-        return Err(DataFusionError::Internal(
-            "Internal Error: to_data_type is not a map type.".to_string(),
-        ));
-    };
+    match to_data_type {
+        DataType::Map(entries_field, _) => {
+            let key_field = key_field(entries_field).ok_or(DataFusionError::Internal(
+                "map is missing key field".to_string(),
+            ))?;
+            let value_field = value_field(entries_field).ok_or(DataFusionError::Internal(
+                "map is missing value field".to_string(),
+            ))?;
 
-    let key_field = key_field(entries_field).ok_or(DataFusionError::Internal(
-        "map is missing key field".to_string(),
-    ))?;
-    let value_field = value_field(entries_field).ok_or(DataFusionError::Internal(
-        "map is missing value field".to_string(),
-    ))?;
+            let key_array = cast_array(
+                Arc::<dyn Array>::clone(from.keys()),
+                key_field.data_type(),
+                parquet_options,
+            )?;
+            let value_array = cast_array(
+                Arc::<dyn Array>::clone(from.values()),
+                value_field.data_type(),
+                parquet_options,
+            )?;
 
-    let key_array = cast_array(
-        Arc::<dyn Array>::clone(from.keys()),
-        key_field.data_type(),
-        parquet_options,
-    )?;
-    let value_array = cast_array(
-        Arc::<dyn Array>::clone(from.values()),
-        value_field.data_type(),
-        parquet_options,
-    )?;
-
-    Ok(Arc::new(MapArray::new(
-        Arc::<arrow::datatypes::Field>::clone(entries_field),
-        from.offsets().clone(),
-        StructArray::new(
-            Fields::from(vec![key_field, value_field]),
-            vec![key_array, value_array],
-            from.entries().nulls().cloned(),
-        ),
-        from.nulls().cloned(),
-        to_ordered,
-    )))
+            Ok(Arc::new(MapArray::new(
+                Arc::<arrow::datatypes::Field>::clone(entries_field),
+                from.offsets().clone(),
+                StructArray::new(
+                    Fields::from(vec![key_field, value_field]),
+                    vec![key_array, value_array],
+                    from.entries().nulls().cloned(),
+                ),
+                from.nulls().cloned(),
+                to_ordered,
+            )))
+        }
+        dt => Err(DataFusionError::Internal(format!(
+            "Expected MapType. Got: {dt}"
+        ))),
+    }
 }
 
 /// Gets the key field from the entries of a map.  For all other types returns None.
-pub(crate) fn key_field(entries_field: &FieldRef) -> Option<FieldRef> {
+fn key_field(entries_field: &FieldRef) -> Option<FieldRef> {
     if let DataType::Struct(fields) = entries_field.data_type() {
         fields.first().cloned()
     } else {
@@ -307,7 +309,7 @@ pub(crate) fn key_field(entries_field: &FieldRef) -> Option<FieldRef> {
 }
 
 /// Gets the value field from the entries of a map.  For all other types returns None.
-pub(crate) fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
+fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     if let DataType::Struct(fields) = entries_field.data_type() {
         fields.get(1).cloned()
     } else {
@@ -344,6 +346,16 @@ pub(crate) fn prepare_object_store(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+    prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+}
+
+/// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
+/// and object store path
+pub(crate) fn prepare_object_store_with_configs(
+    runtime_env: Arc<RuntimeEnv>,
+    url: String,
+    object_store_configs: &HashMap<String, String>,
+) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
     let mut scheme = url.scheme();
@@ -361,6 +373,8 @@ pub(crate) fn prepare_object_store(
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
         parse_hdfs_url(&url)
+    } else if scheme == "s3" {
+        objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
     } else {
         parse_url(&url)
     }
@@ -386,17 +400,12 @@ mod tests {
         use crate::execution::operators::ExecutionError;
 
         let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
-        let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
         let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
 
-        let all_urls = [local_file_system_url, s3_url, hdfs_url];
+        let all_urls = [local_file_system_url, hdfs_url];
         let expected: Vec<Result<(ObjectStoreUrl, Path), ExecutionError>> = vec![
             Ok((
                 ObjectStoreUrl::parse("file://").unwrap(),
-                Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
-            )),
-            Ok((
-                ObjectStoreUrl::parse("s3://test_bucket").unwrap(),
                 Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
             )),
             Err(ExecutionError::GeneralError(
