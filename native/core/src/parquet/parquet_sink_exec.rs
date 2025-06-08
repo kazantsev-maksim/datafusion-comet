@@ -16,8 +16,8 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::datatypes::SchemaRef;
-use datafusion::config::TableParquetOptions;
+use arrow::datatypes::{DataType, SchemaRef};
+use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::file_format::parquet::ParquetSink;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::{FileGroup, FileSinkConfig};
@@ -31,6 +31,7 @@ const PARQUET_EXTENSION: &'static str = "parquet";
 pub fn init_parquet_sink_exec(
     input: Arc<dyn ExecutionPlan>,
     object_store_url: ObjectStoreUrl,
+    table_partition_cols: Vec<(String, DataType)>,
     output_schema: SchemaRef
 ) -> Result<Arc<DataSinkExec>, ExecutionError> {
     let file_sink_config = FileSinkConfig {
@@ -39,11 +40,12 @@ pub fn init_parquet_sink_exec(
         file_group: FileGroup::new(vec![]),
         table_paths: vec![],
         output_schema: output_schema.clone(),
-        table_partition_cols: vec![],
+        table_partition_cols: table_partition_cols.clone(),
         insert_op: InsertOp::Overwrite,
         keep_partition_by_columns: false,
         file_extension: PARQUET_EXTENSION.into(),
     };
+    ParquetOptions::default();
     let parquet_sink = Arc::new(ParquetSink::new(
         file_sink_config,
         TableParquetOptions::default(),

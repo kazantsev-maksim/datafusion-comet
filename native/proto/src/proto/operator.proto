@@ -155,6 +155,7 @@ message WriteFiles {
   string path = 1;
   repeated SparkStructField output_schema = 2;
   repeated PartitionColumn partition_columns = 3;
+  map<string, string> options = 4;
 }
 
 enum AggregateMode {

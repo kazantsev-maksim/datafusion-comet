@@ -55,7 +55,7 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, PartitionColumn, PartitionFields}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, PartitionColumn}
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -2430,7 +2430,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case WriteFilesExec(child, _, partitionColumns, _, _, _) =>
+      case WriteFilesExec(child, _, partitionColumns, _, options, _) =>
         val partitionColumnsExpr = partitionColumns.map { attr =>
           val serializedDataType = serializeDataType(attr.dataType)
           serializedDataType.map { dataType =>
@@ -2447,6 +2447,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val writeFilesExpr = OperatorOuterClass.WriteFiles
             .newBuilder()
             .addAllPartitionColumns(partitionColumnsExpr.map(_.get).asJava)
+            .putAllOptions(options.asJava)
             .addAllOutputSchema(outputSchemaExpr.toIterable.asJava)
           Some(result.setWriteFiles(writeFilesExpr).build())
         } else {

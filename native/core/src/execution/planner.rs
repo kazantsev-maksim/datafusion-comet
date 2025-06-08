@@ -79,10 +79,7 @@ use datafusion::common::{
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
-use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
-};
+use datafusion::logical_expr::{AggregateUDF, ReturnFieldArgs, ScalarUDF, UserDefinedLogicalNode, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
@@ -1502,7 +1499,13 @@ impl PhysicalPlanner {
                 let output_schema: SchemaRef = convert_spark_types_to_arrow_schema(write.output_schema.as_slice());
                 let object_store_url = ObjectStoreUrl::parse(write.path.to_string())?;
 
-                let parquet_sink_exec = init_parquet_sink_exec(child.native_plan.clone(), object_store_url, output_schema)?;
+                let _ = write.partition_columns.iter().map(|p| to_arrow_datatype(p.data_type.unwrap()));
+
+                let parquet_sink_exec = init_parquet_sink_exec(
+                    child.native_plan.clone(),
+                    object_store_url,
+                    vec![],
+                    output_schema)?;
 
                 Ok((
                     scans,
