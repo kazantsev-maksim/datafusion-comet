@@ -634,7 +634,8 @@ object CometConf extends ShimCometConf {
   val COMET_WRITE_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.parquet.enabled")
       .doc(
-        "A boolean flag that enables (true) or disables (false) use native logic to write parquet files.")
+        "A boolean flag that enables (true) or disables (false)" +
+          " use native logic to write parquet files.")
       .booleanConf
       .createWithDefault(false)
 

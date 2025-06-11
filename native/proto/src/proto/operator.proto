@@ -151,11 +151,13 @@ message PartitionColumn {
   spark.spark_expression.DataType data_type = 2;
 }
 
+
+
 message WriteFiles {
   string path = 1;
   repeated SparkStructField output_schema = 2;
   repeated PartitionColumn partition_columns = 3;
-  map<string, string> options = 4;
+  map<string, string> static_partitions = 4;
 }
 
 enum AggregateMode {

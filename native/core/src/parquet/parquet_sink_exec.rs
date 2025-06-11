@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
+use std::fmt::format;
 use crate::execution::operators::ExecutionError;
 use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -30,25 +32,38 @@ const PARQUET_EXTENSION: &'static str = "parquet";
 
 pub fn init_parquet_sink_exec(
     input: Arc<dyn ExecutionPlan>,
-    object_store_url: ObjectStoreUrl,
+    output_base_path: String,
     table_partition_cols: Vec<(String, DataType)>,
-    output_schema: SchemaRef
+    static_partitions: HashMap<String, String>,
+    output_schema: SchemaRef,
 ) -> Result<Arc<DataSinkExec>, ExecutionError> {
     let file_sink_config = FileSinkConfig {
-        original_url: String::default(),
-        object_store_url: object_store_url.clone(),
+        original_url: output_base_path.clone(),
+        object_store_url: ObjectStoreUrl::parse(&output_base_path)?,
         file_group: FileGroup::new(vec![]),
         table_paths: vec![],
         output_schema: output_schema.clone(),
-        table_partition_cols: table_partition_cols.clone(),
+        table_partition_cols,
         insert_op: InsertOp::Overwrite,
         keep_partition_by_columns: false,
         file_extension: PARQUET_EXTENSION.into(),
     };
-    ParquetOptions::default();
     let parquet_sink = Arc::new(ParquetSink::new(
         file_sink_config,
         TableParquetOptions::default(),
     ));
     Ok(Arc::new(DataSinkExec::new(input, parquet_sink, None)))
+}
+
+fn path_with_partitions(output_base_path: String, static_partitions: HashMap<String, String>) -> ObjectStoreUrl {
+    let partitions_path = static_partitions
+        .iter()
+        .map(|kv| format!("{}={}", kv.0, kv.1))
+        .reduce(|a, b| format!("{}/{}", a, b));
+    ObjectStoreUrl::parse(format!("{:?}/{:?}", output_base_path, partitions_path)).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+
 }

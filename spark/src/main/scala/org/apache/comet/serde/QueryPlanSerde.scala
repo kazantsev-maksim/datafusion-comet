@@ -2430,7 +2430,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case WriteFilesExec(child, _, partitionColumns, _, options, _) =>
+      case WriteFilesExec(child, _, partitionColumns, _, _, staticPartitions) =>
         val partitionColumnsExpr = partitionColumns.map { attr =>
           val serializedDataType = serializeDataType(attr.dataType)
           serializedDataType.map { dataType =>
@@ -2447,7 +2447,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val writeFilesExpr = OperatorOuterClass.WriteFiles
             .newBuilder()
             .addAllPartitionColumns(partitionColumnsExpr.map(_.get).asJava)
-            .putAllOptions(options.asJava)
+            .putAllStaticPartitions(staticPartitions.asJava)
             .addAllOutputSchema(outputSchemaExpr.toIterable.asJava)
           Some(result.setWriteFiles(writeFilesExpr).build())
         } else {

@@ -1497,14 +1497,22 @@ impl PhysicalPlanner {
             OpStruct::WriteFiles(write) => {
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let output_schema: SchemaRef = convert_spark_types_to_arrow_schema(write.output_schema.as_slice());
-                let object_store_url = ObjectStoreUrl::parse(write.path.to_string())?;
 
-                let _ = write.partition_columns.iter().map(|p| to_arrow_datatype(p.data_type.unwrap()));
-
+                let table_partition_cols = write
+                    .partition_columns
+                    .iter()
+                    .map(|partition| {
+                        let arrow_data_type =
+                            to_arrow_datatype(&partition.data_type.clone().unwrap());
+                        (partition.name.clone(), arrow_data_type)
+                    })
+                    .collect();
+                
                 let parquet_sink_exec = init_parquet_sink_exec(
                     child.native_plan.clone(),
-                    object_store_url,
-                    vec![],
+                    write.path.clone(),
+                    table_partition_cols,
+                    write.static_partitions.clone(),
                     output_schema)?;
 
                 Ok((

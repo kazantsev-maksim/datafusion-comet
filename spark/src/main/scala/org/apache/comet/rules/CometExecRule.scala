@@ -328,8 +328,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: CoalesceExec if !op.children.forall(isCometNative) =>
         op
 
-      case op @ WriteFilesExec(child, fileFormat: FileFormat, partitionColumns, _, options, _)
-          if CometConf.COMET_WRITE_PARQUET_ENABLED =>
+      case op @ WriteFilesExec(
+            child,
+            fileFormat: FileFormat,
+            partitionColumns,
+            _,
+            options,
+            tableSpec) if CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
         if (fileFormat.isInstanceOf[ParquetFileFormat]) {
           QueryPlanSerde
             .operator2Proto(op)

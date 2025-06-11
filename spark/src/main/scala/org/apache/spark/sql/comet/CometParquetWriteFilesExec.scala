@@ -40,10 +40,7 @@ case class CometParquetWriteFilesExec(
     this.copy(child = newChild)
 
   override def equals(obj: Any): Boolean = {
-    obj match {
-      case other: CometParquetWriteFilesExec => this.child == other.child
-      case _ => false
-    }
+    false
   }
 
   override def hashCode(): Int = Objects.hashCode(child)
