@@ -29,13 +29,12 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FileFormat, WriteFilesExec}
+import org.apache.spark.sql.execution.datasources.{FileFormat, InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
-
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
 import org.apache.comet.CometSparkSessionExtensions._
@@ -328,20 +327,25 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: CoalesceExec if !op.children.forall(isCometNative) =>
         op
 
-      case op @ WriteFilesExec(child, fileFormat, partitionColumns, bucketSpec, options, _)
+      case op @ WriteFilesExec(child, fileFormat, _, bucketSpec, _, _)
           if CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
         if (fileFormat.isInstanceOf[ParquetFileFormat] && bucketSpec.isEmpty) {
           QueryPlanSerde
             .operator2Proto(op)
             .map { nativeOp =>
-              val cometOp =
-                CometParquetWriteFilesExec(op, op.output, child, partitionColumns, options)
+              // scalastyle:off println
+              println(s"Spark write parquet files: $nativeOp")
+              // scalastyle:on println line=333 column=8
+              val cometOp = CometParquetWriteFilesExec(op, op.output, child)
               CometSinkPlaceHolder(nativeOp, op, cometOp)
             }
             .getOrElse(op)
         } else {
           op
         }
+
+      case op: WriteFilesExec if !CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
+        withInfo(op, "Write parquet files is not enabled")
 
       case s: TakeOrderedAndProjectExec
           if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED

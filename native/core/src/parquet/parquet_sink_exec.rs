@@ -15,11 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
-use std::fmt::format;
 use crate::execution::operators::ExecutionError;
 use arrow::datatypes::{DataType, SchemaRef};
-use datafusion::config::{ParquetOptions, TableParquetOptions};
+use datafusion::config::TableParquetOptions;
 use datafusion::datasource::file_format::parquet::ParquetSink;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::{FileGroup, FileSinkConfig};

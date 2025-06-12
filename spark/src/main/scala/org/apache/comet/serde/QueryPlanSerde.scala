@@ -2450,12 +2450,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
           .build()
         val outputSchemaExpr = schema2Proto(child.schema.fields)
         assert(outputSchemaExpr.length == child.schema.fields.length)
-        if (partitionColumnsExpr.forall(_.isDefined)) {
+        val outputBasePath = options.get("path")
+        if (partitionColumnsExpr.forall(_.isDefined) && outputBasePath.isDefined) {
           val writeFilesExpr = OperatorOuterClass.WriteFiles
             .newBuilder()
             .addAllPartitionColumns(partitionColumnsExpr.map(_.get).asJava)
             .addAllOutputSchema(outputSchemaExpr.toIterable.asJava)
             .setParquetWriteOptions(parquetWriteOptions)
+            .setOutputBasePath(outputBasePath.get)
           Some(result.setWriteFiles(writeFilesExpr).build())
         } else {
           None
@@ -2840,6 +2842,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: CollectLimitExec => true
       case _: UnionExec => true
       case _: ShuffleExchangeExec => true
+      case _: WriteFilesExec => true
       case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
       case _: TakeOrderedAndProjectExec => true

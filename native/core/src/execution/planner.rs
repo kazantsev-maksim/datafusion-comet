@@ -86,7 +86,6 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_sink_exec::init_parquet_sink_exec;
-use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -1495,6 +1494,7 @@ impl PhysicalPlanner {
                 ))
             },
             OpStruct::WriteFiles(write) => {
+                println!("This is parquet write");
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let output_schema: SchemaRef = convert_spark_types_to_arrow_schema(write.output_schema.as_slice());
 
