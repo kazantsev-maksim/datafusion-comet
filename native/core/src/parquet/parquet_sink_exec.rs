@@ -34,7 +34,6 @@ pub fn init_parquet_sink_exec(
     input: Arc<dyn ExecutionPlan>,
     output_base_path: String,
     table_partition_cols: Vec<(String, DataType)>,
-    static_partitions: HashMap<String, String>,
     output_schema: SchemaRef,
 ) -> Result<Arc<DataSinkExec>, ExecutionError> {
     let file_sink_config = FileSinkConfig {
@@ -53,17 +52,4 @@ pub fn init_parquet_sink_exec(
         TableParquetOptions::default(),
     ));
     Ok(Arc::new(DataSinkExec::new(input, parquet_sink, None)))
-}
-
-fn path_with_partitions(output_base_path: String, static_partitions: HashMap<String, String>) -> ObjectStoreUrl {
-    let partitions_path = static_partitions
-        .iter()
-        .map(|kv| format!("{}={}", kv.0, kv.1))
-        .reduce(|a, b| format!("{}/{}", a, b));
-    ObjectStoreUrl::parse(format!("{:?}/{:?}", output_base_path, partitions_path)).unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-
 }

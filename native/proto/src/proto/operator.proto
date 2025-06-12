@@ -151,13 +151,29 @@ message PartitionColumn {
   spark.spark_expression.DataType data_type = 2;
 }
 
-
+message ParquetWriteOptions {
+  int32 page_size = 1;
+  int32 batch_size = 2;
+  string writer_version = 3;
+  CompressionCodec codec = 5;
+  bool dictionary_enabled = 6;
+  int32 dictionary_page_size = 7;
+  bool statistics_enabled = 8;
+  int32 max_row_group_size = 9;
+  int32 column_index_truncate_length = 10;
+  int32 data_page_row_count_limit = 11;
+  optional string encoding = 12;
+  bool bloom_filter_on_write = 13;
+  optional int64 bloom_filter_ndv = 14;
+  optional float bloom_filter_fpp = 15;
+  bool allow_single_file_parallelism = 16;
+}
 
 message WriteFiles {
-  string path = 1;
+  string output_base_path = 1;
   repeated SparkStructField output_schema = 2;
   repeated PartitionColumn partition_columns = 3;
-  map<string, string> static_partitions = 4;
+  ParquetWriteOptions parquet_write_options = 4;
 }
 
 enum AggregateMode {

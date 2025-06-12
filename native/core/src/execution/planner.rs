@@ -1510,9 +1510,8 @@ impl PhysicalPlanner {
                 
                 let parquet_sink_exec = init_parquet_sink_exec(
                     child.native_plan.clone(),
-                    write.path.clone(),
+                    write.output_base_path.clone(),
                     table_partition_cols,
-                    write.static_partitions.clone(),
                     output_schema)?;
 
                 Ok((

@@ -24,6 +24,7 @@ import java.util.Locale
 import scala.collection.JavaConverters._
 import scala.math.min
 
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
@@ -55,7 +56,7 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, PartitionColumn}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, ParquetWriteOptions, PartitionColumn}
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -2430,7 +2431,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case WriteFilesExec(child, _, partitionColumns, _, _, staticPartitions) =>
+      case WriteFilesExec(child, _, partitionColumns, _, options, _) =>
         val partitionColumnsExpr = partitionColumns.map { attr =>
           val serializedDataType = serializeDataType(attr.dataType)
           serializedDataType.map { dataType =>
@@ -2441,14 +2442,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build()
           }
         }
+        val conf = child.session.sessionState.newHadoopConfWithOptions(options)
+        val parquetWriteOptions = ParquetWriteOptions
+          .newBuilder()
+          .setPageSize(ParquetOutputFormat.getPageSize(conf))
+          .setDictionaryEnabled(ParquetOutputFormat.getEnableDictionary(conf))
+          .build()
         val outputSchemaExpr = schema2Proto(child.schema.fields)
         assert(outputSchemaExpr.length == child.schema.fields.length)
         if (partitionColumnsExpr.forall(_.isDefined)) {
           val writeFilesExpr = OperatorOuterClass.WriteFiles
             .newBuilder()
             .addAllPartitionColumns(partitionColumnsExpr.map(_.get).asJava)
-            .putAllStaticPartitions(staticPartitions.asJava)
             .addAllOutputSchema(outputSchemaExpr.toIterable.asJava)
+            .setParquetWriteOptions(parquetWriteOptions)
           Some(result.setWriteFiles(writeFilesExpr).build())
         } else {
           None
