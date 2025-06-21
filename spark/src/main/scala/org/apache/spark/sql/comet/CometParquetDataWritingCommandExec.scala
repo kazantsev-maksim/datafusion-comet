@@ -26,21 +26,21 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-case class CometParquetWriteFilesExec(
+case class CometParquetDataWritingCommandExec(
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     child: SparkPlan)
     extends CometExec
     with UnaryExecNode {
 
-  override def nodeName: String = "CometParquetWriteFilesExec"
+  override def nodeName: String = "CometParquetDataWritingCommandExec"
 
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val childRDD = child.executeColumnar()
-    if (childRDD.getNumPartitions == 0) {
+    val rdd = child.executeColumnar()
+    if (rdd.getNumPartitions == 0) {
       CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)
     } else {
-      childRDD
+      rdd
     }
   }
 
@@ -49,11 +49,12 @@ case class CometParquetWriteFilesExec(
 
   override def equals(obj: Any): Boolean = {
     obj match {
-      case other: CometParquetWriteFilesExec =>
+      case other: CometParquetDataWritingCommandExec =>
         this.child == other.child && this.child == other.child
       case _ => false
     }
   }
 
   override def hashCode(): Int = Objects.hashCode(child, output)
+
 }

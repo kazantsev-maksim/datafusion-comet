@@ -26,6 +26,7 @@ import scala.math.min
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.{execution, SaveMode}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
@@ -36,12 +37,11 @@ import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, WriteFilesExec}
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, InsertIntoHadoopFsRelationCommand, PartitionedFile, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2431,8 +2431,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case WriteFilesExec(child, _, partitionColumns, _, options, _) =>
-        val partitionColumnsExpr = partitionColumns.map { attr =>
+      case DataWritingCommandExec(command, child)
+          if CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
+        val writingCommandExec = command.asInstanceOf[InsertIntoHadoopFsRelationCommand]
+        val partitionColumnsExpr = writingCommandExec.partitionColumns.map { attr =>
           val serializedDataType = serializeDataType(attr.dataType)
           serializedDataType.map { dataType =>
             PartitionColumn
@@ -2442,7 +2444,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build()
           }
         }
-        val conf = child.session.sessionState.newHadoopConfWithOptions(options)
+        val conf = child.session.sessionState.newHadoopConfWithOptions(writingCommandExec.options)
         val parquetWriteOptions = ParquetWriteOptions
           .newBuilder()
           .setPageSize(ParquetOutputFormat.getPageSize(conf))
@@ -2450,15 +2452,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           .build()
         val outputSchemaExpr = schema2Proto(child.schema.fields)
         assert(outputSchemaExpr.length == child.schema.fields.length)
-        val outputBasePath = options.get("path")
-        if (partitionColumnsExpr.forall(_.isDefined) && outputBasePath.isDefined) {
-          val writeFilesExpr = OperatorOuterClass.WriteFiles
+        val saveModeExpr = saveMode2Proto(writingCommandExec.mode)
+        if (partitionColumnsExpr.forall(_.isDefined) && saveModeExpr.isDefined) {
+          val outputBasePath = writingCommandExec.outputPath.toString
+          val writeParquetFilesExpr = OperatorOuterClass.WriteParquetFiles
             .newBuilder()
             .addAllPartitionColumns(partitionColumnsExpr.map(_.get).asJava)
             .addAllOutputSchema(outputSchemaExpr.toIterable.asJava)
             .setParquetWriteOptions(parquetWriteOptions)
-            .setOutputBasePath(outputBasePath.get)
-          Some(result.setWriteFiles(writeFilesExpr).build())
+            .setSaveMode(saveModeExpr.get)
+            .setOutputBasePath(outputBasePath)
+          Some(result.setWriteParquetFiles(writeParquetFilesExpr).build())
         } else {
           None
         }
@@ -2778,6 +2782,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         None
 
       case op if isCometSink(op) =>
+        logInfo(s"${op.nodeName}: isCometSink")
         val supportedTypes =
           op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
@@ -2842,7 +2847,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: CollectLimitExec => true
       case _: UnionExec => true
       case _: ShuffleExchangeExec => true
-      case _: WriteFilesExec => true
+      case _: DataWritingCommandExec => true
       case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
       case _: TakeOrderedAndProjectExec => true
@@ -3104,6 +3109,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
       partitionBuilder.addPartitionedFile(fileBuilder.build())
     })
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+  }
+
+  private def saveMode2Proto(mode: SaveMode): Option[OperatorOuterClass.SaveMode] = {
+    mode match {
+      case SaveMode.Overwrite => Some(OperatorOuterClass.SaveMode.Overwrite)
+      case SaveMode.Append => Some(OperatorOuterClass.SaveMode.Append)
+      case _ => None
+    }
   }
 }
 

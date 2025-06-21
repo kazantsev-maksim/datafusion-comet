@@ -115,6 +115,7 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion::logical_expr::dml::InsertOp;
 use url::Url;
 
 // For clippy error on type_complexity.
@@ -1493,8 +1494,8 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             },
-            OpStruct::WriteFiles(write) => {
-                println!("This is parquet write");
+            OpStruct::WriteParquetFiles(write) => {
+                println!("This is Rust parquet writer");
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let output_schema: SchemaRef = convert_spark_types_to_arrow_schema(write.output_schema.as_slice());
 
@@ -1507,12 +1508,19 @@ impl PhysicalPlanner {
                         (partition.name.clone(), arrow_data_type)
                     })
                     .collect();
+
+                let insert_op = if write.save_mode == 0 {
+                    InsertOp::Append
+                } else {
+                    InsertOp::Overwrite
+                };
                 
                 let parquet_sink_exec = init_parquet_sink_exec(
                     child.native_plan.clone(),
                     write.output_base_path.clone(),
                     table_partition_cols,
-                    output_schema)?;
+                    output_schema,
+                    insert_op)?;
 
                 Ok((
                     scans,

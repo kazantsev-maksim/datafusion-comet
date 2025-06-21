@@ -40,7 +40,7 @@ class ParquetWriteSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_WRITE_PARQUET_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
-        // val _ = s"${dir.toURI.toString}/output"
+        val _ = s"${dir.toURI.toString}/output"
         spark.read
           .parquet(filename)
           .write

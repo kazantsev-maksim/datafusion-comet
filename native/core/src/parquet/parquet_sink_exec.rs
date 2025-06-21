@@ -28,11 +28,13 @@ use std::sync::Arc;
 
 const PARQUET_EXTENSION: &'static str = "parquet";
 
+#[allow(clippy::too_many_arguments)]
 pub fn init_parquet_sink_exec(
     input: Arc<dyn ExecutionPlan>,
     output_base_path: String,
     table_partition_cols: Vec<(String, DataType)>,
     output_schema: SchemaRef,
+    insert_op: InsertOp,
 ) -> Result<Arc<DataSinkExec>, ExecutionError> {
     let file_sink_config = FileSinkConfig {
         original_url: output_base_path.clone(),
@@ -41,7 +43,7 @@ pub fn init_parquet_sink_exec(
         table_paths: vec![],
         output_schema: output_schema.clone(),
         table_partition_cols,
-        insert_op: InsertOp::Overwrite,
+        insert_op: insert_op.clone(),
         keep_partition_by_columns: false,
         file_extension: PARQUET_EXTENSION.into(),
     };
