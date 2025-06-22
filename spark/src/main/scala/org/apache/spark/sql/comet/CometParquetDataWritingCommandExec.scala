@@ -21,26 +21,30 @@ package org.apache.spark.sql.comet
 
 import java.util.Objects
 
+import org.apache.spark.internal.io.FileCommitProtocol.EmptyTaskCommitMessage
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.connector.write.WriterCommitMessage
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.datasources.{ExecutedWriteSummary, WriteFilesSpec, WriteTaskResult}
+
+import org.apache.comet.serde.OperatorOuterClass.Operator
 
 case class CometParquetDataWritingCommandExec(
+    override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
-    child: SparkPlan)
-    extends CometExec
-    with UnaryExecNode {
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
 
   override def nodeName: String = "CometParquetDataWritingCommandExec"
 
-  override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def executeWrite(writeFilesSpec: WriteFilesSpec): RDD[WriterCommitMessage] = {
+    logInfo("execute comet write")
     val rdd = child.executeColumnar()
-    if (rdd.getNumPartitions == 0) {
-      CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)
-    } else {
-      rdd
+    rdd.map { _ =>
+      WriteTaskResult(EmptyTaskCommitMessage, ExecutedWriteSummary(Set.empty, Seq.empty))
     }
   }
 
@@ -50,11 +54,11 @@ case class CometParquetDataWritingCommandExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometParquetDataWritingCommandExec =>
-        this.child == other.child && this.child == other.child
+        this.child == other.child && this.output == other.output &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ => false
     }
   }
 
   override def hashCode(): Int = Objects.hashCode(child, output)
-
 }

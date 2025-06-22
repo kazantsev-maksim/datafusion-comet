@@ -50,7 +50,7 @@ case class CometParquetWriteFilesExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometParquetWriteFilesExec =>
-        this.child == other.child && this.child == other.child
+        this.child == other.child && this.output == other.output
       case _ => false
     }
   }

@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
-import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -339,13 +339,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op: DataWritingCommandExec if CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
-        QueryPlanSerde
-          .operator2Proto(op)
-          .map { nativeOp =>
-            val cometOp = CometParquetDataWritingCommandExec(op, op.output, op.child)
-            CometSinkPlaceHolder(nativeOp, op, cometOp)
-          }
-          .getOrElse(op)
+        val newPlan = newPlanWithProto(
+          op,
+          CometParquetDataWritingCommandExec(_, op, op.output, op.child, SerializedPlan(None)))
+        logInfo(s"New plan: ${newPlan.prettyJson}")
+        newPlan
 
       case op: DataWritingCommandExec
           if !CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) || !isCometNative(op.child) =>
