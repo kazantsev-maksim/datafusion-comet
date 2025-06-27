@@ -20,7 +20,6 @@
 package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -33,11 +32,11 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -248,6 +247,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }
+
+      case scan: CSVScan =>
+        ???
 
       case other =>
         withInfo(
