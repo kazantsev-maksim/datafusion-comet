@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -29,16 +30,18 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
 import org.apache.comet.{CometConf, DataTypeSupport}
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
+import org.apache.comet.csv.CometCsvScan
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
-import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -251,7 +254,27 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case scan: CSVScan =>
-        ???
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+
+        val partitionSchemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+        if (!partitionSchemaSupported) {
+          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+        }
+
+        if (schemaSupported && partitionSchemaSupported) {
+          val cometCsvScan = CometCsvScan(scan)
+          CometBatchScanExec(
+            scanExec.copy(scan = cometCsvScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfos(scanExec, fallbackReasons.toSet)
+        }
 
       case other =>
         withInfo(

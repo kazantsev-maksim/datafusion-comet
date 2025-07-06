@@ -54,6 +54,7 @@ pub mod common;
 pub mod execution;
 mod jvm_bridge;
 pub mod parquet;
+pub mod csv;
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 #[global_allocator]

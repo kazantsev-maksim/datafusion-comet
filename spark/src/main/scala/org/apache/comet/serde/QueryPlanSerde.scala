@@ -41,6 +41,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2288,6 +2289,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
             objectStoreOptions.foreach { case (key, value) =>
               nativeScanBuilder.putObjectStoreOptions(key, value)
             }
+          }
+
+          // Collect csv read options
+          val fileFormat = scan.relation.fileFormat
+          fileFormat match {
+            case _: CSVFileFormat =>
+              val options = scan.relation.options
+              logWarning(s"Csv read options: $options")
+            case _ => ()
           }
 
           Some(result.setNativeScan(nativeScanBuilder).build())
