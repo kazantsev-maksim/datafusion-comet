@@ -36,6 +36,7 @@ import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
@@ -528,7 +529,7 @@ object CometScanExec {
   def isFileFormatSupported(fileFormat: FileFormat): Boolean = {
     // Only support Spark's built-in Parquet scans, not others such as Delta which use a subclass
     // of ParquetFileFormat.
-    fileFormat.getClass().equals(classOf[ParquetFileFormat])
+    fileFormat.isInstanceOf[ParquetFileFormat] || fileFormat.isInstanceOf[CSVFileFormat]
   }
 
 }

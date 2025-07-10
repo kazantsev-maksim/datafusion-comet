@@ -24,19 +24,19 @@ import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.VarBinaryVector;
 
 public final class CsvColumnarVector {
-    private static final BufferAllocator ALLOCATOR = new RootAllocator();
+  private final BufferAllocator ALLOCATOR = new RootAllocator();
 
-    private final VarBinaryVector vector;
+  private final VarBinaryVector vector;
 
-    public CsvColumnarVector(String name) {
-        this.vector = new VarBinaryVector(name, ALLOCATOR);
-    }
+  public CsvColumnarVector(String name) {
+    this.vector = new VarBinaryVector(name, ALLOCATOR);
+  }
 
-    public void setValue(int idx, byte[] bytes) {
-        this.vector.set(idx, bytes);
-    }
+  public void setValue(int idx, byte[] bytes) {
+    this.vector.set(idx, bytes);
+  }
 
-    public VarBinaryVector getVector() {
-        return vector;
-    }
+  public VarBinaryVector getVector() {
+    return vector;
+  }
 }
