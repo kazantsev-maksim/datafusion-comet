@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -80,63 +80,41 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   /**
    * Tries to transform a Spark physical plan into a Comet plan.
    *
-   * This rule traverses bottom-up from the original Spark plan and for each plan node, there
-   * are a few cases to consider:
+   * This rule traverses bottom-up from the original Spark plan and for each plan node, there are
+   * a few cases to consider:
    *
-   * 1. The child(ren) of the current node `p` cannot be converted to native
-   *   In this case, we'll simply return the original Spark plan, since Comet native
-   *   execution cannot start from an arbitrary Spark operator (unless it is special node
-   *   such as scan or sink such as shuffle exchange, union etc., which are wrapped by
-   *   `CometScanWrapper` and `CometSinkPlaceHolder` respectively).
+   *   1. The child(ren) of the current node `p` cannot be converted to native In this case, we'll
+   *      simply return the original Spark plan, since Comet native execution cannot start from an
+   *      arbitrary Spark operator (unless it is special node such as scan or sink such as shuffle
+   *      exchange, union etc., which are wrapped by `CometScanWrapper` and `CometSinkPlaceHolder`
+   *      respectively).
    *
-   * 2. The child(ren) of the current node `p` can be converted to native
-   *   There are two sub-cases for this scenario: 1) This node `p` can also be converted to
-   *   native. In this case, we'll create a new native Comet operator for `p` and connect it with
-   *   its previously converted child(ren); 2) This node `p` cannot be converted to native. In
-   *   this case, similar to 1) above, we simply return `p` as it is. Its child(ren) would still
-   *   be native Comet operators.
+   * 2. The child(ren) of the current node `p` can be converted to native There are two sub-cases
+   * for this scenario: 1) This node `p` can also be converted to native. In this case, we'll
+   * create a new native Comet operator for `p` and connect it with its previously converted
+   * child(ren); 2) This node `p` cannot be converted to native. In this case, similar to 1)
+   * above, we simply return `p` as it is. Its child(ren) would still be native Comet operators.
    *
    * After this rule finishes, we'll do another pass on the final plan to convert all adjacent
-   * Comet native operators into a single native execution block. Please see where
-   * `convertBlock` is called below.
+   * Comet native operators into a single native execution block. Please see where `convertBlock`
+   * is called below.
    *
    * Here are a few examples:
    *
-   *     Scan                       ======>             CometScan
-   *      |                                                |
-   *     Filter                                         CometFilter
-   *      |                                                |
-   *     HashAggregate                                  CometHashAggregate
-   *      |                                                |
-   *     Exchange                                       CometExchange
-   *      |                                                |
-   *     HashAggregate                                  CometHashAggregate
-   *      |                                                |
-   *     UnsupportedOperator                            UnsupportedOperator
+   * Scan ======> CometScan \| | Filter CometFilter \| | HashAggregate CometHashAggregate \| |
+   * Exchange CometExchange \| | HashAggregate CometHashAggregate \| | UnsupportedOperator
+   * UnsupportedOperator
    *
    * Native execution doesn't necessarily have to start from `CometScan`:
    *
-   *     Scan                       =======>            CometScan
-   *      |                                                |
-   *     UnsupportedOperator                            UnsupportedOperator
-   *      |                                                |
-   *     HashAggregate                                  HashAggregate
-   *      |                                                |
-   *     Exchange                                       CometExchange
-   *      |                                                |
-   *     HashAggregate                                  CometHashAggregate
-   *      |                                                |
-   *     UnsupportedOperator                            UnsupportedOperator
+   * Scan =======> CometScan \| | UnsupportedOperator UnsupportedOperator \| | HashAggregate
+   * HashAggregate \| | Exchange CometExchange \| | HashAggregate CometHashAggregate \| |
+   * UnsupportedOperator UnsupportedOperator
    *
    * A sink can also be Comet operators other than `CometExchange`, for instance `CometUnion`:
    *
-   *     Scan   Scan                =======>          CometScan CometScan
-   *      |      |                                       |         |
-   *     Filter Filter                                CometFilter CometFilter
-   *      |      |                                       |         |
-   *        Union                                         CometUnion
-   *          |                                               |
-   *        Project                                       CometProject
+   * Scan Scan =======> CometScan CometScan \| | | | Filter Filter CometFilter CometFilter \| | |
+   * \| Union CometUnion \| | Project CometProject
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
@@ -275,6 +253,21 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
                 SerializedPlan(None))
             })
         }
+
+      case op: BaseAggregateExec
+          if op.isInstanceOf[SortAggregateExec] && isCometShuffleEnabled(conf) =>
+        newPlanWithProto(
+          op,
+          nativeOp => {
+            CometSortAggregateExec(
+              nativeOp,
+              op,
+              op.output,
+              op.groupingExpressions,
+              op.aggregateExpressions,
+              op.child,
+              SerializedPlan(None))
+          })
 
       case op: ShuffledHashJoinExec
           if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&

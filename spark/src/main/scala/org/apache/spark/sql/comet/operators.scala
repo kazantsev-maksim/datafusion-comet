@@ -724,6 +724,36 @@ case class CometHashAggregateExec(
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
 
+case class CometSortAggregateExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometSortAggregateExec =>
+        this.output == other.output &&
+        this.groupingExpressions == other.groupingExpressions &&
+        this.aggregateExpressions == other.aggregateExpressions &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ => false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, groupingExpressions, aggregateExpressions, child)
+
+}
+
 case class CometHashJoinExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
