@@ -39,12 +39,10 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_ANSI_MODE_ENABLED
-import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -362,11 +360,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op: DataWritingCommandExec if CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
-        val newPlan = newPlanWithProto(
-          op,
-          CometParquetDataWritingCommandExec(_, op, op.output, op.child, SerializedPlan(None)))
-        logInfo(s"New plan: ${newPlan.prettyJson}")
-        newPlan
+        QueryPlanSerde
+          .operator2Proto(op)
+          .map { nativeOp =>
+            logInfo(s"nativeOp: $nativeOp")
+            CometParquetDataWritingCommandExec(
+              nativeOp,
+              op,
+              op.output,
+              op.child,
+              SerializedPlan(None))
+          }
+          .getOrElse(op)
 
       case op: DataWritingCommandExec
           if !CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) || !isCometNative(op.child) =>

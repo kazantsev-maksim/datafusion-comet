@@ -35,13 +35,8 @@ case class CometParquetWriteFilesExec(
 
   override def nodeName: String = "CometParquetWriteFilesExec"
 
-  override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val childRDD = child.executeColumnar()
-    if (childRDD.getNumPartitions == 0) {
-      CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)
-    } else {
-      childRDD
-    }
+  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    child.executeColumnar()
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =

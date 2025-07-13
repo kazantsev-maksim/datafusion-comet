@@ -60,5 +60,5 @@ case class CometParquetDataWritingCommandExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(child, output)
+  override def hashCode(): Int = Objects.hashCode(child, output, serializedPlanOpt)
 }

@@ -40,9 +40,8 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, InsertIntoHadoopFsRelationCommand, PartitionedFile, WriteFilesExec}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, InsertIntoHadoopFsRelationCommand, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -57,9 +56,8 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, ParquetWriteOptions, PartitionColumn}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -2338,6 +2336,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case DataWritingCommandExec(command, child)
           if CometConf.COMET_WRITE_PARQUET_ENABLED.get(conf) =>
+        logInfo("Writing command serde")
         val writingCommandExec = command.asInstanceOf[InsertIntoHadoopFsRelationCommand]
         val partitionColumnsExpr = writingCommandExec.partitionColumns.map { attr =>
           val serializedDataType = serializeDataType(attr.dataType)
