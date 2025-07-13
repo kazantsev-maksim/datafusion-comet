@@ -49,27 +49,33 @@ mod datetime_funcs;
 pub use agg_funcs::*;
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
+
+mod bloom_filter;
+pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
+
 mod conditional_funcs;
 mod conversion_funcs;
 mod math_funcs;
+mod nondetermenistic_funcs;
 
 pub use array_funcs::*;
 pub use bitwise_funcs::*;
 pub use conditional_funcs::*;
 pub use conversion_funcs::*;
+pub use nondetermenistic_funcs::*;
 
-pub use comet_scalar_funcs::create_comet_physical_fun;
+pub use comet_scalar_funcs::{create_comet_physical_fun, register_all_comet_functions};
 pub use datetime_funcs::{
-    spark_date_add, spark_date_sub, DateTruncExpr, HourExpr, MinuteExpr, SecondExpr,
+    spark_date_add, spark_date_sub, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
     TimestampTruncExpr,
 };
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::ToJson;
 pub use math_funcs::{
-    create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
-    spark_hex, spark_make_decimal, spark_round, spark_unhex, spark_unscaled_value, CheckOverflow,
-    NegativeExpr, NormalizeNaNAndZero,
+    create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
+    spark_decimal_integral_div, spark_floor, spark_hex, spark_make_decimal, spark_round,
+    spark_unhex, spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
 };
 pub use string_funcs::*;
 
@@ -96,4 +102,8 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
     }
+}
+
+pub(crate) fn divide_by_zero_error() -> SparkError {
+    SparkError::DivideByZero
 }

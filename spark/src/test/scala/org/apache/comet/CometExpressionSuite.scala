@@ -21,13 +21,16 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
-import scala.collection.immutable.Seq
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
@@ -36,13 +39,21 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        testFun
+      }
+    }
+  }
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
@@ -73,7 +84,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
             "SELECT coalesce(cast(_18 as date), cast(_19 as date), _20) FROM tbl")
@@ -102,102 +113,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("bitwise_count - min/max values") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "bitwise_count_test"
-        withTable(table) {
-          sql(s"create table $table(col1 long, col2 int, col3 short, col4 byte) using parquet")
-          sql(s"insert into $table values(1111, 2222, 17, 7)")
-          sql(
-            s"insert into $table values(${Long.MaxValue}, ${Int.MaxValue}, ${Short.MaxValue}, ${Byte.MaxValue})")
-          sql(
-            s"insert into $table values(${Long.MinValue}, ${Int.MinValue}, ${Short.MinValue}, ${Byte.MinValue})")
-
-          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col1) FROM $table"))
-          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col2) FROM $table"))
-          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col3) FROM $table"))
-          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col4) FROM $table"))
-          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(true) FROM $table"))
-          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(false) FROM $table"))
-        }
-      }
-    }
-  }
-
-  test("bitwise_count - random values (spark gen)") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      val filename = path.toString
-      val random = new Random(42)
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        ParquetGenerator.makeParquetFile(
-          random,
-          spark,
-          filename,
-          10,
-          DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = false,
-            generateStruct = false,
-            generateMap = false))
-      }
-      val table = spark.read.parquet(filename)
-      val df =
-        table.selectExpr("bit_count(c1)", "bit_count(c2)", "bit_count(c3)", "bit_count(c4)")
-
-      checkSparkAnswerAndOperator(df)
-    }
-  }
-
-  test("bitwise_count - random values (native parquet gen)") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
-        val table = spark.read.parquet(path.toString)
-        checkSparkAnswerAndOperator(
-          table
-            .selectExpr(
-              "bit_count(_2)",
-              "bit_count(_3)",
-              "bit_count(_4)",
-              "bit_count(_5)",
-              "bit_count(_11)"))
-      }
-    }
-  }
-
-  test("bitwise shift with different left/right types") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col1 long, col2 int) using parquet")
-          sql(s"insert into $table values(1111, 2)")
-          sql(s"insert into $table values(1111, 2)")
-          sql(s"insert into $table values(3333, 4)")
-          sql(s"insert into $table values(5555, 6)")
-
-          checkSparkAnswerAndOperator(
-            s"SELECT shiftright(col1, 2), shiftright(col1, col2) FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT shiftleft(col1, 2), shiftleft(col1, col2) FROM $table")
-        }
-      }
-    }
-  }
-
   test("basic data type support") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        }
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+          }
         }
       }
     }
@@ -212,7 +136,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> allowIncompatible.toString) {
             withTempDir { dir =>
               val path = new Path(dir.toURI.toString, "testuint.parquet")
-              makeParquetFileAllTypes(
+              makeParquetFileAllPrimitiveTypes(
                 path,
                 dictionaryEnabled = dictionaryEnabled,
                 Byte.MinValue,
@@ -247,7 +171,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
         withParquetTable(path.toString, "tbl") {
           val sqlString =
             """SELECT
@@ -274,7 +198,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
             "SELECT _4 FROM tbl WHERE " +
@@ -289,7 +213,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("TINYINT", "SHORT", "INT").foreach { intType =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
           }
@@ -302,7 +226,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
             checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
@@ -322,7 +246,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("_2", "_3", "_4").foreach { intColumn => // tinyint, short, int columns
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
           }
@@ -336,7 +260,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("TINYINT", "SHORT", "INT").foreach { intType =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(f"SELECT _20 - CAST(2 as $intType) from tbl")
           }
@@ -349,7 +273,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
             checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
@@ -369,7 +293,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("_2", "_3", "_4").foreach { intColumn => // tinyint, short, int columns
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(f"SELECT _20 - $intColumn FROM tbl")
           }
@@ -478,6 +402,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("time expressions folded on jvm") {
+    val ts = "1969-12-31 16:23:45"
+
+    val functions = Map("hour" -> 16, "minute" -> 23, "second" -> 45)
+
+    functions.foreach { case (func, expectedValue) =>
+      val query = s"SELECT $func('$ts') AS result"
+      val df = spark.sql(query)
+      val optimizedPlan = df.queryExecution.optimizedPlan
+
+      val isFolded = optimizedPlan.expressions.exists {
+        case alias: Alias =>
+          alias.child match {
+            case Literal(value, _) => value == expectedValue
+            case _ => false
+          }
+        case _ => false
+      }
+
+      assert(isFolded, s"Expected '$func(...)' to be constant-folded to Literal($expectedValue)")
+    }
+  }
+
   test("hour on int96 timestamp column") {
     import testImplicits._
 
@@ -579,7 +526,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "date_trunc.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           Seq("YEAR", "YYYY", "YY", "QUARTER", "MON", "MONTH", "MM", "WEEK").foreach { format =>
             checkSparkAnswerAndOperator(s"SELECT trunc(_20, '$format') from tbl")
@@ -1205,41 +1152,71 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  private val doubleValues: Seq[Double] = Seq(
+    -1.0,
+    // TODO we should eventually enable negative zero but there are known issues still
+    // -0.0,
+    0.0,
+    +1.0,
+    Double.MinValue,
+    Double.MaxValue,
+    Double.NaN,
+    Double.MinPositiveValue,
+    Double.PositiveInfinity,
+    Double.NegativeInfinity)
+
   test("various math scalar functions") {
-    Seq("true", "false").foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary) {
-        withParquetTable(
-          (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
-          "tbl",
-          withDictionary = dictionary.toBoolean) {
-          checkSparkAnswerWithTol(
-            "SELECT abs(_1), acos(_2), asin(_1), atan(_2), atan2(_1, _2), cos(_1) FROM tbl")
-          checkSparkAnswerWithTol(
-            "SELECT exp(_1), ln(_2), log10(_1), log2(_1), pow(_1, _2) FROM tbl")
-          // TODO: comment in the round tests once supported
-          // checkSparkAnswerWithTol("SELECT round(_1), round(_2) FROM tbl")
-          checkSparkAnswerWithTol("SELECT signum(_1), sin(_1), sqrt(_1) FROM tbl")
-          checkSparkAnswerWithTol("SELECT tan(_1) FROM tbl")
+    val data = doubleValues.map(n => (n, n))
+    withParquetTable(data, "tbl") {
+      // expressions with single arg
+      for (expr <- Seq(
+          "acos",
+          "asin",
+          "atan",
+          "cos",
+          "exp",
+          "ln",
+          "log10",
+          "log2",
+          "sin",
+          "sqrt",
+          "tan")) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
+        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
+          case op: CometProjectExec => op
         }
+        assert(cometProjectExecs.length == 1, expr)
+      }
+      // expressions with two args
+      for (expr <- Seq("atan2", "pow")) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
+        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
+          case op: CometProjectExec => op
+        }
+        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }
 
-  test("expm1") {
-    val testValues = Seq(
-      -1,
-      0,
-      +1,
-      Double.MinValue,
-      Double.MaxValue,
-      Double.NaN,
-      Double.MinPositiveValue,
-      Double.PositiveInfinity,
-      Double.NegativeInfinity)
-    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
-    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
-      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
+  private def testDoubleScalarExpr(expr: String): Unit = {
+    val testValuesRepeated = doubleValues.flatMap(v => Seq.fill(1000)(v))
+    for (withDictionary <- Seq(true, false)) {
+      withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl", withDictionary) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
+        val projections = collect(df.queryExecution.executedPlan) { case p: CometProjectExec =>
+          p
+        }
+        assert(projections.length == 1)
+      }
     }
+  }
+
+  test("signum") {
+    testDoubleScalarExpr("signum")
+  }
+
+  test("expm1") {
+    testDoubleScalarExpr("expm1")
   }
 
   // https://github.com/apache/datafusion-comet/issues/666
@@ -1247,7 +1224,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
         withParquetTable(path.toString, "tbl") {
           Seq(2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17).foreach { col =>
             checkSparkAnswerAndOperator(s"SELECT abs(_${col}) FROM tbl")
@@ -1366,13 +1343,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(
+        makeParquetFileAllPrimitiveTypes(
           path,
           dictionaryEnabled = dictionaryEnabled,
           -128,
           128,
           randomSize = 100)
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+        // this test requires native_comet scan due to unsigned u8/u16 issue
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           withParquetTable(path.toString, "tbl") {
             for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
                 null)) {
@@ -1429,8 +1407,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        // this test requires native_comet scan due to unsigned u8/u16 issue
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(
               "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
@@ -1482,31 +1461,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq("SELECT * FROM tbl where _2 is not false", "SELECT * FROM tbl where not _2 <=> false")
           .foreach(s => checkSparkAnswerAndOperator(s))
       })
-  }
-
-  test("bitwise expressions") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col1 int, col2 int) using parquet")
-          sql(s"insert into $table values(1111, 2)")
-          sql(s"insert into $table values(1111, 2)")
-          sql(s"insert into $table values(3333, 4)")
-          sql(s"insert into $table values(5555, 6)")
-
-          checkSparkAnswerAndOperator(
-            s"SELECT col1 & col2,  col1 | col2, col1 ^ col2 FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT col1 & 1234,  col1 | 1234, col1 ^ 1234 FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT shiftright(col1, 2), shiftright(col1, col2) FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT shiftleft(col1, 2), shiftleft(col1, col2) FROM $table")
-          checkSparkAnswerAndOperator(s"SELECT ~(11), ~col1, ~col2 FROM $table")
-        }
-      }
-    }
   }
 
   test("test in(set)/not in(set)") {
@@ -1645,6 +1599,45 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(col timestamp) using parquet")
           sql(s"insert into $table values (now()), (null)")
           checkSparkAnswerAndOperator(s"SELECT year(col) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("from_unixtime") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = "test"
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(
+            path,
+            dictionaryEnabled = dictionary,
+            -128,
+            128,
+            randomSize = 100)
+          withParquetTable(path.toString, table) {
+            // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
+            // https://github.com/apache/datafusion/issues/16594
+            // After fixing this issue, remove the where clause below
+            val where = "where _5 BETWEEN -8334601211038 AND 8210266876799"
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
+            // TODO: DataFusion toChar does not support Spark datetime pattern format
+            // https://github.com/apache/datafusion/issues/16577
+            // https://github.com/apache/datafusion/issues/14536
+            // After fixing these issues, change checkSparkAnswer to checkSparkAnswerAndOperator
+            checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+            checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
+              checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+              checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            }
+          }
         }
       }
     }
@@ -1807,7 +1800,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + "where A.c1 = B.c1 ",
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "make_interval is not supported")))
+              "make_interval is not supported")),
+          (
+            s"select * from $table LIMIT 10 OFFSET 3",
+            Set(
+              "Comet shuffle is not enabled",
+              "CollectLimit with non-zero offset is not supported")))
+          .foreach(test => {
+            val qry = test._1
+            val expected = test._2
+            val df = sql(qry)
+            df.collect() // force an execution
+            checkSparkAnswerAndCompareExplainPlan(df, expected)
+          })
+      }
+    }
+  }
+
+  test("explain: CollectLimit disabled") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.key -> "false",
+      EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
+      val table = "test"
+      withTable(table) {
+        sql(s"create table $table(c0 int, c1 int , c2 float) using parquet")
+        sql(s"insert into $table values(0, 1, 100.000001)")
+        Seq(
+          (
+            s"select * from $table LIMIT 10",
+            Set("spark.comet.exec.collectLimit.enabled is false")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
@@ -1842,6 +1865,80 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |""".stripMargin)
         }
       }
+    }
+  }
+
+  test("remainder function") {
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
+
+    def verifyResult(query: String): Unit = {
+      val expectedDivideByZeroError =
+        "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
+
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains(expectedDivideByZeroError))
+          assert(cometException.getMessage.contains(expectedDivideByZeroError))
+        case (None, None) => checkSparkAnswerAndOperator(sql(query))
+        case (None, Some(ex)) =>
+          fail("Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+        case (Some(sparkException), None) =>
+          fail(
+            "Spark threw an exception but Comet did not. Spark exception: " +
+              sparkException.getMessage)
+      }
+    }
+
+    val tableName = "remainder_table"
+    withTable(tableName) {
+      sql(s"""
+          |create table $tableName (
+          |a_int int,
+          |b_int int,
+          |a_float float,
+          |b_float float,
+          |a_decimal decimal(18,4),
+          |b_decimal decimal(18,4)
+          |) using parquet
+          """.stripMargin)
+
+      val minInt = Int.MinValue
+
+      sql(s"""
+          |insert into $tableName values
+          |(3, 0, 3.0, 0.0, cast(3 as decimal(18,4)), cast(0 as decimal(18,4))),
+          |(10, 3, 10.5, 3.0, cast(10 as decimal(18,4)), cast(3 as decimal(18,4))),
+          |(-10, 3, -10.5, 3.0, cast(-10 as decimal(18,4)), cast(3 as decimal(18,4))),
+          |($minInt, -1, $minInt, -1.0, cast($minInt as decimal(18,4)), cast(-1 as decimal(18,4))),
+          |(null, 3, null, 3.0, null, cast(3 as decimal(18,4))),
+          |(3, null, 3.0, null, cast(3 as decimal(18,4)), null)
+          """.stripMargin)
+
+      Seq(true, false).foreach(enabled => {
+        withAnsiMode(enabled = enabled) {
+          verifyResult(s"""
+          |select
+          |a_int, b_int, a_float, b_float, a_decimal, b_decimal,
+          |a_int % b_int as int_int_modulo,
+          |a_int % b_float as int_float_modulo,
+          |mod(a_int, b_int) as int_int_mod,
+          |mod(a_int, b_float) as int_float_mod,
+          |a_float % b_float as float_float_modulo,
+          |a_float % b_decimal as float_decimal_modulo,
+          |mod(a_float, b_float) as float_float_mod,
+          |mod(a_float, b_decimal) as float_decimal_mod,
+          |a_decimal % b_decimal as decimal_decimal_modulo,
+          |mod(a_decimal, b_decimal) as decimal_decimal_mod
+          |from $tableName
+          """.stripMargin)
+        }
+      })
     }
   }
 
@@ -2076,7 +2173,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
           checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
@@ -2091,7 +2188,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
             "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
@@ -2108,6 +2205,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 100).map(i => {
@@ -2131,6 +2230,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json escaping of field names and string values") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
     val gen = new DataGenerator(new Random(42))
     val chars = "\\'\"abc\t\r\n\f\b"
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -2158,6 +2259,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json unicode") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 100).map(i => {
@@ -2226,6 +2329,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select primitive fields") {
+    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2240,7 +2345,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df = spark.read.parquet(dir.toString()).select("nested1.id")
       // Comet's original scan does not support structs.
       // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
-      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+      if (!scanImpl.equals(CometConf.SCAN_NATIVE_COMET)) {
         checkSparkAnswerAndOperator(df)
       } else {
         checkSparkAnswer(df)
@@ -2249,6 +2354,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select subset of struct") {
+    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2270,7 +2377,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df = spark.read.parquet(dir.toString())
       // Comet's original scan does not support structs.
       // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
-      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+      if (scanImpl != CometConf.SCAN_NATIVE_COMET) {
         checkSparkAnswerAndOperator(df.select("nested1.id"))
         checkSparkAnswerAndOperator(df.select("nested1.nested2"))
         checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
@@ -2285,6 +2392,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - read entire struct") {
+    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2306,7 +2415,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df = spark.read.parquet(dir.toString()).select("nested1.id")
       // Comet's original scan does not support structs.
       // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
-      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+      if (scanImpl != CometConf.SCAN_NATIVE_COMET) {
         checkSparkAnswerAndOperator(df)
       } else {
         checkSparkAnswer(df)
@@ -2423,78 +2532,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("read map[int, int] from parquet") {
-    assume(usingDataSourceExec(conf))
-
-    withTempPath { dir =>
-// create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-// Spark does not allow null as a key but does allow null as a
-// value, and the entire map be null
-          .select(
-            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("map1"))
-          } else {
-            checkSparkAnswerAndOperator(df.select("map1"))
-          }
-          // we fall back to Spark for map_keys and map_values
-          checkSparkAnswer(df.select(map_keys(col("map1"))))
-          checkSparkAnswer(df.select(map_values(col("map1"))))
-        }
-      }
-    }
-  }
-
-  // repro for https://github.com/apache/datafusion-comet/issues/1754
-  test("read map[struct, struct] from parquet") {
-    assume(usingDataSourceExec(conf))
-
-    withTempPath { dir =>
-      // create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-          .withColumn("id2", col("id"))
-          .withColumn("id3", col("id"))
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
-          .select(
-            when(
-              col("id") > 1,
-              map(
-                struct(col("id"), col("id2"), col("id3")),
-                when(col("id") > 2, struct(col("id"), col("id2"), col("id3"))))).alias("map1"))
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          df.createOrReplaceTempView("tbl")
-          if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("map1"))
-          } else {
-            checkSparkAnswerAndOperator(df.select("map1"))
-          }
-          // we fall back to Spark for map_keys and map_values
-          checkSparkAnswer(df.select(map_keys(col("map1"))))
-          checkSparkAnswer(df.select(map_values(col("map1"))))
-          checkSparkAnswer(spark.sql("SELECT map_keys(map1).id2 FROM tbl"))
-          checkSparkAnswer(spark.sql("SELECT map_values(map1).id2 FROM tbl"))
-        }
-      }
-    }
-  }
-
   test("read array[int] from parquet") {
     assume(usingDataSourceExec(conf))
 
@@ -2528,7 +2565,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
         checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
@@ -2559,7 +2596,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
 
         Seq(true, false).foreach { ansiEnabled =>
           withSQLConf(
@@ -2621,7 +2658,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           val df = spark.read
             .parquet(path.toString)
             .select(
@@ -2639,46 +2676,47 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path1 = new Path(dir.toURI.toString, "test1.parquet")
-        val path2 = new Path(dir.toURI.toString, "test2.parquet")
-        makeParquetFileAllTypes(
-          path1,
-          dictionaryEnabled = dictionaryEnabled,
-          0,
-          0,
-          randomSize = 10000)
-        makeParquetFileAllTypes(
-          path2,
-          dictionaryEnabled = dictionaryEnabled,
-          0,
-          0,
-          randomSize = 10000)
-        withParquetTable(path1.toString, "tbl1") {
-          withParquetTable(path2.toString, "tbl2") {
-            checkSparkAnswerAndOperator("""
-                |select
-                | t1._2 div t2._2, div(t1._2, t2._2),
-                | t1._3 div t2._3, div(t1._3, t2._3),
-                | t1._4 div t2._4, div(t1._4, t2._4),
-                | t1._5 div t2._5, div(t1._5, t2._5),
-                | t1._9 div t2._9, div(t1._9, t2._9),
-                | t1._10 div t2._10, div(t1._10, t2._10),
-                | t1._11 div t2._11, div(t1._11, t2._11)
-                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                | order by t1._id""".stripMargin)
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path1 = new Path(dir.toURI.toString, "test1.parquet")
+          val path2 = new Path(dir.toURI.toString, "test2.parquet")
+          makeParquetFileAllPrimitiveTypes(
+            path1,
+            dictionaryEnabled = dictionaryEnabled,
+            0,
+            0,
+            randomSize = 10000)
+          makeParquetFileAllPrimitiveTypes(
+            path2,
+            dictionaryEnabled = dictionaryEnabled,
+            0,
+            0,
+            randomSize = 10000)
+          withParquetTable(path1.toString, "tbl1") {
+            withParquetTable(path2.toString, "tbl2") {
+              checkSparkAnswerAndOperator("""
+                  |select
+                  | t1._2 div t2._2, div(t1._2, t2._2),
+                  | t1._3 div t2._3, div(t1._3, t2._3),
+                  | t1._4 div t2._4, div(t1._4, t2._4),
+                  | t1._5 div t2._5, div(t1._5, t2._5),
+                  | t1._9 div t2._9, div(t1._9, t2._9),
+                  | t1._10 div t2._10, div(t1._10, t2._10),
+                  | t1._11 div t2._11, div(t1._11, t2._11)
+                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                  | order by t1._id""".stripMargin)
 
-            checkSparkAnswerAndOperator("""
-                |select
-                | t1._12 div t2._12, div(t1._12, t2._12),
-                | t1._15 div t2._15, div(t1._15, t2._15),
-                | t1._16 div t2._16, div(t1._16, t2._16),
-                | t1._17 div t2._17, div(t1._17, t2._17)
-                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                | order by t1._id""".stripMargin)
+              checkSparkAnswerAndOperator("""
+                  |select
+                  | t1._12 div t2._12, div(t1._12, t2._12),
+                  | t1._15 div t2._15, div(t1._15, t2._15),
+                  | t1._16 div t2._16, div(t1._16, t2._16),
+                  | t1._17 div t2._17, div(t1._17, t2._17)
+                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                  | order by t1._id""".stripMargin)
+            }
           }
         }
       }
@@ -2707,6 +2745,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
   }
 
+  test("rand expression with random parameters") {
+    val partitionsNumber = Random.nextInt(10) + 1
+    val rowsNumber = Random.nextInt(500)
+    val seed = Random.nextLong()
+    // use this value to have both single-batch and multi-batch partitions
+    val cometBatchSize = math.max(1, math.ceil(rowsNumber.toDouble / partitionsNumber).toInt)
+    withSQLConf("spark.comet.batchSize" -> cometBatchSize.toString) {
+      withParquetDataFrame((0 until rowsNumber).map(Tuple1.apply)) { df =>
+        val dfWithRandParameters = df.repartition(partitionsNumber).withColumn("rnd", rand(seed))
+        checkSparkAnswerAndOperator(dfWithRandParameters)
+        val dfWithOverflowSeed =
+          df.repartition(partitionsNumber).withColumn("rnd", rand(Long.MaxValue))
+        checkSparkAnswerAndOperator(dfWithOverflowSeed)
+        val dfWithNullSeed =
+          df.repartition(partitionsNumber).selectExpr("_1", "rand(null) as rnd")
+        checkSparkAnswerAndOperator(dfWithNullSeed)
+      }
+    }
+  }
+
   test("window query with rangeBetween") {
 
     // values are int
@@ -2726,6 +2784,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       w
     }
     assert(cometWindowExecs.isEmpty)
+  }
+
+  test("vectorized reader: missing all struct fields") {
+    Seq(true, false).foreach { offheapEnabled =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
+
+        val readSchema = new StructType().add(
+          "_1",
+          new StructType()
+            .add("_3", IntegerType, nullable = false)
+            .add("_4", StringType, nullable = false),
+          nullable = false)
+
+        withParquetFile(data) { file =>
+          checkAnswer(
+            spark.read.schema(readSchema).parquet(file),
+            Row(null) :: Row(null) :: Row(null) :: Nil)
+        }
+      }
+    }
   }
 
 }

@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.math.min
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
@@ -32,7 +33,6 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
@@ -40,6 +40,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, InsertIntoHadoopFsRelationCommand, PartitionedFile, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
@@ -56,6 +57,8 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, ParquetWriteOptions, PartitionColumn}
 import org.apache.comet.shims.CometExprShim
 
@@ -63,6 +66,66 @@ import org.apache.comet.shims.CometExprShim
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with CometExprShim {
+
+  /**
+   * Mapping of Spark expression class to Comet expression handler.
+   */
+  private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
+    classOf[ArrayAppend] -> CometArrayAppend,
+    classOf[ArrayContains] -> CometArrayContains,
+    classOf[ArrayDistinct] -> CometArrayDistinct,
+    classOf[ArrayExcept] -> CometArrayExcept,
+    classOf[ArrayInsert] -> CometArrayInsert,
+    classOf[ArrayIntersect] -> CometArrayIntersect,
+    classOf[ArrayJoin] -> CometArrayJoin,
+    classOf[ArrayMax] -> CometArrayMax,
+    classOf[ArrayRemove] -> CometArrayRemove,
+    classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[ArraysOverlap] -> CometArraysOverlap,
+    classOf[ArrayUnion] -> CometArrayUnion,
+    classOf[CreateArray] -> CometCreateArray,
+    classOf[Ascii] -> CometAscii,
+    classOf[ConcatWs] -> CometConcatWs,
+    classOf[Chr] -> CometChr,
+    classOf[InitCap] -> CometInitCap,
+    classOf[BitwiseCount] -> CometBitwiseCount,
+    classOf[BitwiseGet] -> CometBitwiseGet,
+    classOf[BitwiseNot] -> CometBitwiseNot,
+    classOf[BitwiseOr] -> CometBitwiseOr,
+    classOf[BitwiseXor] -> CometBitwiseXor,
+    classOf[BitLength] -> CometBitLength,
+    classOf[FromUnixTime] -> CometFromUnixTime,
+    classOf[Length] -> CometLength,
+    classOf[Acos] -> UnaryScalarFuncSerde("acos"),
+    classOf[Cos] -> UnaryScalarFuncSerde("cos"),
+    classOf[Asin] -> UnaryScalarFuncSerde("asin"),
+    classOf[Sin] -> UnaryScalarFuncSerde("sin"),
+    classOf[Atan] -> UnaryScalarFuncSerde("atan"),
+    classOf[Tan] -> UnaryScalarFuncSerde("tan"),
+    classOf[Exp] -> UnaryScalarFuncSerde("exp"),
+    classOf[Expm1] -> UnaryScalarFuncSerde("expm1"),
+    classOf[Sqrt] -> UnaryScalarFuncSerde("sqrt"),
+    classOf[Signum] -> UnaryScalarFuncSerde("signum"),
+    classOf[Md5] -> UnaryScalarFuncSerde("md5"),
+    classOf[ShiftLeft] -> CometShiftLeft,
+    classOf[ShiftRight] -> CometShiftRight,
+    classOf[StringInstr] -> CometStringInstr,
+    classOf[StringRepeat] -> CometStringRepeat,
+    classOf[StringReplace] -> CometStringReplace,
+    classOf[StringTranslate] -> CometStringTranslate,
+    classOf[StringTrim] -> CometTrim,
+    classOf[StringTrimLeft] -> CometStringTrimLeft,
+    classOf[StringTrimRight] -> CometStringTrimRight,
+    classOf[StringTrimBoth] -> CometStringTrimBoth,
+    classOf[Upper] -> CometUpper,
+    classOf[Lower] -> CometLower,
+    classOf[Murmur3Hash] -> CometMurmur3Hash,
+    classOf[XxHash64] -> CometXxHash64,
+    classOf[MapKeys] -> CometMapKeys,
+    classOf[MapValues] -> CometMapValues,
+    classOf[MapFromArrays] -> CometMapFromArrays,
+    classOf[GetMapValue] -> CometMapExtract)
+
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -690,12 +753,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
         None
 
       case rem @ Remainder(left, right, _) if supportedDataType(left.dataType) =>
-        val rightExpr = nullIfWhenPrimitive(right)
-
         createMathExpression(
           expr,
           left,
-          rightExpr,
+          right,
           inputs,
           binding,
           rem.dataType,
@@ -852,6 +913,42 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+      // ToPrettyString is new in Spark 3.5
+      case _
+          if expr.getClass.getSimpleName == "ToPrettyString" && expr
+            .isInstanceOf[UnaryExpression] && expr.isInstanceOf[TimeZoneAwareExpression] =>
+        val child = expr.asInstanceOf[UnaryExpression].child
+        val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
+
+        handleCast(
+          expr,
+          child,
+          inputs,
+          binding,
+          DataTypes.StringType,
+          timezoneId,
+          CometEvalMode.TRY) match {
+          case Some(_) =>
+            exprToProtoInternal(child, inputs, binding) match {
+              case Some(p) =>
+                val toPrettyString = ExprOuterClass.ToPrettyString
+                  .newBuilder()
+                  .setChild(p)
+                  .setTimezone(timezoneId.getOrElse("UTC"))
+                  .build()
+                Some(
+                  ExprOuterClass.Expr
+                    .newBuilder()
+                    .setToPrettyString(toPrettyString)
+                    .build())
+              case _ =>
+                withInfo(expr, child)
+                None
+            }
+          case None =>
+            None
+        }
+
       case StructsToJson(options, child, timezoneId) =>
         if (options.nonEmpty) {
           withInfo(expr, "StructsToJson with options is not supported")
@@ -953,32 +1050,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-      case StartsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
+      case StartsWith(attribute, prefix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
+        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
 
-      case EndsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
+      case EndsWith(attribute, suffix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
+        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
 
-      case Contains(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setContains(binaryExpr))
+      case Contains(attribute, value) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val valueExpr = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
 
       case StringSpace(child) =>
         createUnaryExpr(
@@ -1045,21 +1130,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case TruncDate(child, format) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val formatExpr = exprToProtoInternal(format, inputs, binding)
-
-        if (childExpr.isDefined && formatExpr.isDefined) {
-          val builder = ExprOuterClass.TruncDate.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setFormat(formatExpr.get)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setTruncDate(builder)
-              .build())
-        } else {
-          withInfo(expr, child, format)
-          None
-        }
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("date_trunc", DateType, childExpr, formatExpr)
+        optExprWithInfo(optExpr, expr, child, format)
 
       case TruncTimestamp(format, child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1278,21 +1351,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 //            None
 //          }
 
-      case Acos(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("acos", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Asin(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("asin", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Atan(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("atan", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
       case Atan2(left, right) =>
         val leftExpr = exprToProtoInternal(left, inputs, binding)
         val rightExpr = exprToProtoInternal(right, inputs, binding)
@@ -1328,16 +1386,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             val optExpr = scalarFunctionExprToProtoWithReturnType("ceil", e.dataType, childExpr)
             optExprWithInfo(optExpr, expr, child)
         }
-
-      case Cos(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("cos", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Exp(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("exp", childExpr)
-        optExprWithInfo(optExpr, expr, child)
 
       case e @ Floor(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1415,39 +1463,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
             optExprWithInfo(optExpr, expr, r.child)
         }
 
-      // TODO enable once https://github.com/apache/datafusion/issues/11557 is fixed or
-      // when we have a Spark-compatible version implemented in Comet
-//        case Signum(child) =>
-//          val childExpr = exprToProtoInternal(child, inputs)
-//          val optExpr = scalarExprToProto("signum", childExpr)
-//          optExprWithInfo(optExpr, expr, child)
-
-      case Sin(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("sin", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Sqrt(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("sqrt", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Tan(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("tan", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case _: Ascii =>
-        CometAscii.convert(expr, inputs, binding)
-
-      case Expm1(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("expm1", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
       case s: StringDecode =>
         // Right child is the encoding expression.
-        s.right match {
+        s.charset match {
           case Literal(str, DataTypes.StringType)
               if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
             // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
@@ -1457,7 +1475,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               expr,
               None,
               DataTypes.StringType,
-              exprToProtoInternal(s.left, inputs, binding).get,
+              exprToProtoInternal(s.bin, inputs, binding).get,
               CometEvalMode.TRY)
           case _ =>
             withInfo(expr, "Comet only supports decoding with 'utf-8'.")
@@ -1493,9 +1511,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
             None
         }
-
-      case _: BitLength =>
-        CometBitLength.convert(expr, inputs, binding)
 
       case If(predicate, trueValue, falseValue) =>
         val predicateExpr = exprToProtoInternal(predicate, inputs, binding)
@@ -1550,22 +1565,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, allBranches: _*)
           None
         }
-      case _: ConcatWs =>
-        CometConcatWs.convert(expr, inputs, binding)
-
-      case _: Chr =>
-        CometChr.convert(expr, inputs, binding)
-
-      case _: InitCap =>
-        CometInitCap.convert(expr, inputs, binding)
-
-      case _: Length =>
-        CometLength.convert(expr, inputs, binding)
-
-      case Md5(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("md5", childExpr)
-        optExprWithInfo(optExpr, expr, child)
 
       case OctetLength(child) =>
         val castExpr = Cast(child, StringType)
@@ -1579,36 +1578,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("reverse", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
 
-      case _: StringInstr =>
-        CometStringInstr.convert(expr, inputs, binding)
-
-      case _: StringRepeat =>
-        CometStringRepeat.convert(expr, inputs, binding)
-
-      case _: StringReplace =>
-        CometStringReplace.convert(expr, inputs, binding)
-
-      case _: StringTranslate =>
-        CometStringTranslate.convert(expr, inputs, binding)
-
-      case _: StringTrim =>
-        CometTrim.convert(expr, inputs, binding)
-
-      case _: StringTrimLeft =>
-        CometStringTrimLeft.convert(expr, inputs, binding)
-
-      case _: StringTrimRight =>
-        CometStringTrimRight.convert(expr, inputs, binding)
-
-      case _: StringTrimBoth =>
-        CometStringTrimBoth.convert(expr, inputs, binding)
-
-      case _: Upper =>
-        CometUpper.convert(expr, inputs, binding)
-
-      case _: Lower =>
-        CometLower.convert(expr, inputs, binding)
-
       case BitwiseAnd(left, right) =>
         createBinaryExpr(
           expr,
@@ -1618,69 +1587,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case BitwiseNot(child) =>
-        val childProto = exprToProto(child, inputs, binding)
-        val bitNotScalarExpr =
-          scalarFunctionExprToProto("bit_not", childProto)
-        optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
-
-      case BitwiseOr(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
-
-      case BitwiseXor(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
-
-      case BitwiseCount(child) =>
-        val childProto = exprToProto(child, inputs, binding)
-        val bitCountScalarExpr =
-          scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
-        optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
-
-      case ShiftRight(left, right) =>
-        // DataFusion bitwise shift right expression requires
-        // same data type between left and right side
-        val rightExpression = if (left.dataType == LongType) {
-          Cast(right, LongType)
-        } else {
-          right
-        }
-
-        createBinaryExpr(
-          expr,
-          left,
-          rightExpression,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseShiftRight(binaryExpr))
-
-      case ShiftLeft(left, right) =>
-        // DataFusion bitwise shift right expression requires
-        // same data type between left and right side
-        val rightExpression = if (left.dataType == LongType) {
-          Cast(right, LongType)
-        } else {
-          right
-        }
-
-        createBinaryExpr(
-          expr,
-          left,
-          rightExpression,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseShiftLeft(binaryExpr))
       case In(value, list) =>
         in(expr, value, list, inputs, binding, negate = false)
 
@@ -1827,10 +1733,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case _: Murmur3Hash => CometMurmur3Hash.convert(expr, inputs, binding)
-
-      case _: XxHash64 => CometXxHash64.convert(expr, inputs, binding)
-
       case Sha2(left, numBits) =>
         if (!numBits.foldable) {
           withInfo(expr, "non literal numBits is not supported")
@@ -1890,16 +1792,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .build()
         }
 
-      case CreateArray(children, _) =>
-        val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
-
-        if (childExprs.forall(_.isDefined)) {
-          scalarFunctionExprToProto("make_array", childExprs: _*)
-        } else {
-          withInfo(expr, "unsupported arguments for CreateArray", children: _*)
-          None
-        }
-
       case GetArrayItem(child, ordinal, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
@@ -1921,8 +1813,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
           None
         }
-
-      case expr if expr.prettyName == "array_insert" => convert(CometArrayInsert)
 
       case ElementAt(child, ordinal, defaultValue, failOnError)
           if child.dataType.isInstanceOf[ArrayType] =>
@@ -1969,28 +1859,25 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case _: ArrayRemove => convert(CometArrayRemove)
-      case _: ArrayContains => convert(CometArrayContains)
-      case _: ArrayAppend => convert(CometArrayAppend)
-      case _: ArrayIntersect => convert(CometArrayIntersect)
-      case _: ArrayJoin => convert(CometArrayJoin)
-      case _: ArraysOverlap => convert(CometArraysOverlap)
-      case _: ArrayRepeat => convert(CometArrayRepeat)
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
       case _: ArrayExcept =>
         convert(CometArrayExcept)
-      case mk: MapKeys =>
-        val childExpr = exprToProtoInternal(mk.child, inputs, binding)
-        scalarFunctionExprToProto("map_keys", childExpr)
-      case mv: MapValues =>
-        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
-        scalarFunctionExprToProto("map_values", childExpr)
-      case _ =>
-        withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
-        None
+      case Rand(child, _) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setRand(unaryExpr))
+      case expr =>
+        QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
+          case Some(handler) => convert(handler)
+          case _ =>
+            withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
+            None
+        }
     }
-
   }
 
   /**
@@ -2224,9 +2111,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Sink operators don't have children
           result.clearChildren()
 
-          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
-            // TODO remove flatMap and add error handling for unsupported data filters
-            val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
+            CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
+
+            val dataFilters = new ListBuffer[Expr]()
+            for (filter <- scan.dataFilters) {
+              exprToProto(filter, scan.output) match {
+                case Some(proto) => dataFilters += proto
+                case _ =>
+                  logWarning(s"Unsupported data filter $filter")
+              }
+            }
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
           }
 
@@ -2356,10 +2251,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
           }
 
+          // Some native expressions do not support operating on dictionary-encoded arrays, so
+          // wrap the child in a CopyExec to unpack dictionaries first.
+          def wrapChildInCopyExec(condition: Expression): Boolean = {
+            condition.exists(expr => {
+              expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
+                .isInstanceOf[Contains]
+            })
+          }
+
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
             .setUseDatafusionFilter(!containsNativeCometScan(op))
+            .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
@@ -2640,6 +2545,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
         if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+          // https://github.com/apache/datafusion-comet/issues/457
           withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
         }
@@ -2860,130 +2766,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
-  /**
-   * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
-   * which supports struct/array.
-   */
-  def columnarShuffleSupported(s: ShuffleExchangeExec): (Boolean, String) = {
-    val inputs = s.child.output
-    val partitioning = s.outputPartitioning
-    var msg = ""
-    val supported = partitioning match {
-      case HashPartitioning(expressions, _) =>
-        // columnar shuffle supports the same data types (including complex types) both for
-        // partition keys and for other columns
-        val supported =
-          expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShuffleDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-        if (!supported) {
-          msg = s"unsupported Spark partitioning expressions: $expressions"
-        }
-        supported
-      case SinglePartition =>
-        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-      case RoundRobinPartitioning(_) =>
-        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-      case RangePartitioning(orderings, _) =>
-        val supported =
-          orderings.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            orderings.forall(e => supportedShuffleDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-        if (!supported) {
-          msg = s"unsupported Spark partitioning expressions: $orderings"
-        }
-        supported
-      case _ =>
-        msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
-        false
-    }
-
-    if (!supported) {
-      emitWarning(msg)
-      (false, msg)
-    } else {
-      (true, null)
-    }
-  }
-
-  /**
-   * Whether the given Spark partitioning is supported by Comet native shuffle.
-   */
-  def nativeShuffleSupported(s: ShuffleExchangeExec): (Boolean, String) = {
-
-    /**
-     * Determine which data types are supported as hash-partition keys in native shuffle.
-     *
-     * Hash Partition Key determines how data should be collocated for operations like
-     * `groupByKey`, `reduceByKey` or `join`.
-     */
-    def supportedPartitionKeyDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
-      case _ =>
-        false
-    }
-
-    val inputs = s.child.output
-    val partitioning = s.outputPartitioning
-    var msg = ""
-    val supported = partitioning match {
-      case HashPartitioning(expressions, _) =>
-        // native shuffle currently does not support complex types as partition keys
-        // due to lack of hashing support for those types
-        val supported =
-          expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedPartitionKeyDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-        if (!supported) {
-          msg = s"unsupported Spark partitioning expressions: $expressions"
-        }
-        supported
-      case SinglePartition =>
-        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-      case _ =>
-        msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
-        false
-    }
-
-    if (!supported) {
-      emitWarning(msg)
-      (false, msg)
-    } else {
-      (true, null)
-    }
-  }
-
-  /**
-   * Determine which data types are supported in a shuffle.
-   */
-  def supportedShuffleDataType(dt: DataType): Boolean = dt match {
-    case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-        _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-        _: TimestampNTZType | _: DecimalType | _: DateType =>
-      true
-    case StructType(fields) =>
-      fields.forall(f => supportedShuffleDataType(f.dataType)) &&
-      // Java Arrow stream reader cannot work on duplicate field name
-      fields.map(f => f.name).distinct.length == fields.length
-    case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
-    case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
-    case ArrayType(elementType, _) =>
-      supportedShuffleDataType(elementType)
-    case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
-    case MapType(_, MapType(_, _, _), _) => false
-    case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
-    case MapType(_, StructType(_), _) => false
-    case MapType(ArrayType(_, _), _, _) => false // TODO: array map key/value is not supported
-    case MapType(_, ArrayType(_, _), _) => false
-    case MapType(keyType, valueType, _) =>
-      supportedShuffleDataType(keyType) && supportedShuffleDataType(valueType)
-    case _ =>
-      false
-  }
-
   // Utility method. Adds explain info if the result of calling exprToProto is None
   def optExprWithInfo(
       optExpr: Option[Expr],
@@ -3180,3 +2962,16 @@ trait CometAggregateExpressionSerde {
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
 trait IncompatExpr {}
+
+/** Serde for single-argument scalar function. */
+case class UnaryScalarFuncSerde(name: String) extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val child = expr.children.head
+    val childExpr = exprToProtoInternal(child, inputs, binding)
+    val optExpr = scalarFunctionExprToProto(name, childExpr)
+    optExprWithInfo(optExpr, expr, child)
+  }
+}

@@ -67,16 +67,16 @@ ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiv
 ```
 #### Steps to run individual test suites through SBT
 1. Open SBT with Comet enabled
-```sbt
-ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
+```shell
+ENABLE_COMET=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true 
 ```
 2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
-```sbt
+```shell
  sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z "SPARK-35568"
 ```
 #### Steps to run individual test suites in IntelliJ IDE
 1. Add below configuration in VM Options for your test case (apache-spark repository)
-```sbt
+```shell
 -Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
 ```
 2. Set `ENABLE_COMET=true` in environment variables
@@ -90,12 +90,12 @@ of Apache Spark to enable Comet when running tests. This is a highly manual proc
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.
 
 We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
-for Spark version 3.5.5 we may start by applying the existing diff for 3.4.3 first.
+for Spark version 3.5.6 we may start by applying the existing diff for 3.5.5 first.
 
 ```shell
 cd git/apache/spark
-git checkout v3.5.5
-git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.4.3.diff
+git checkout v3.5.6
+git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.5.5.diff
 ```
 
 Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above
@@ -138,9 +138,13 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 The diff file can be generated using the `git diff` command. It may be necessary to set the `core.abbrev`
 configuration setting to use 11 digits hashes for consistency with existing diff files.
 
+Note that there is an `IgnoreComet.scala` that is not part of the Spark codebase, and therefore needs to be added 
+using `git add` before generating the diff.
+
 ```shell
 git config core.abbrev 11;
-git diff v3.5.5 > ../datafusion-comet/dev/diffs/3.5.5.diff
+git add sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
+git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 ```
 
 ## Running Tests in CI
