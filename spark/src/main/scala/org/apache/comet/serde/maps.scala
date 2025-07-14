@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ArrayType, MapType}
+import org.apache.spark.sql.types.{ArrayType, MapType, StructType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
@@ -79,5 +79,24 @@ object CometMapFromArrays extends CometExpressionSerde {
     val mapFromArraysExpr =
       scalarFunctionExprToProtoWithReturnType("map", returnType, keysExpr, valuesExpr)
     optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMapFromEntries extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val mfe = expr.asInstanceOf[MapFromEntries]
+    val structsExpr = exprToProtoInternal(mfe.child, inputs, binding)
+    val structType =
+      mfe.child.dataType.asInstanceOf[ArrayType].elementType.asInstanceOf[StructType]
+    val keyType = structType.fields(0).dataType
+    val valueType = structType.fields(1).dataType
+    val returnType = MapType(keyType = keyType, valueType = valueType)
+    val mapFromEntriesExpr =
+      scalarFunctionExprToProtoWithReturnType("map_from_entries", returnType, structsExpr)
+    optExprWithInfo(mapFromEntriesExpr, expr, expr.children: _*)
   }
 }

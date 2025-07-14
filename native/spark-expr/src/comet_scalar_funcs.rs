@@ -33,6 +33,7 @@ use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
+use crate::map_funcs::SparkMapFromEntries;
 
 macro_rules! make_comet_scalar_udf {
     ($name:expr, $func:ident, $data_type:ident) => {{
@@ -159,6 +160,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseCount::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseGet::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::default())),
     ]
 }
 
