@@ -122,4 +122,24 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  ignore("map_contains_key") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = false,
+          generateNegativeZero = false,
+          generateArray = true,
+          generateStruct = false,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      spark.read.parquet(filename).createOrReplaceTempView("t1")
+      val df = spark.sql("SELECT map_contains_key(map(c12, c3), c12) FROM t1")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
 }
