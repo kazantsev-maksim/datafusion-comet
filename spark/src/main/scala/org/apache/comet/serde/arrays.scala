@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -486,6 +486,19 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
     val flattenExprProto = exprToProto(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
     optExprWithInfo(flattenScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+  override def convert(
+      expr: ArrayFilter,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.argument, inputs, binding)
+    val predicateExprProto = exprToProto(expr.function, inputs, binding)
+    val arrayFilterScalarExpr =
+      scalarFunctionExprToProto("array_filter", arrayExprProto, predicateExprProto)
+    optExprWithInfo(arrayFilterScalarExpr, expr, expr.children: _*)
   }
 }
 
