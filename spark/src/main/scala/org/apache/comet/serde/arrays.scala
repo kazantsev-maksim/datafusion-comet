@@ -26,6 +26,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.CometFlatten.isTypeSupported
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.CometExprShim
 
@@ -489,15 +490,20 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with ArraysBase {
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
+    if (!isTypeSupported(elementType)) {
+      withInfo(expr, s"data type not supported: $elementType")
+      return None
+    }
     val arrayExprProto = exprToProto(expr.argument, inputs, binding)
-    val predicateExprProto = exprToProto(expr.function, inputs, binding)
+    val predicateExprsProto = expr.function.children.map(exprToProto(_, inputs, binding))
     val arrayFilterScalarExpr =
-      scalarFunctionExprToProto("array_filter", arrayExprProto, predicateExprProto)
+      scalarFunctionExprToProto("array_filter", Seq(arrayExprProto) ++ predicateExprsProto: _*)
     optExprWithInfo(arrayFilterScalarExpr, expr, expr.children: _*)
   }
 }

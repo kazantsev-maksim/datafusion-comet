@@ -19,13 +19,17 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedLambdaVariable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal, NamedLambdaVariable}
+import org.apache.spark.sql.types.StringType
+
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, optExprWithInfo}
 
 object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
   override def convert(
       expr: NamedLambdaVariable,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    None
+    val namedVariableExprProto = exprToProto(Literal(null, StringType), Seq.empty)
+    optExprWithInfo(namedVariableExprProto, expr, expr.children: _*)
   }
 }
