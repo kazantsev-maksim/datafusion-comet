@@ -79,6 +79,7 @@ incompatible expressions.
 | StringInstr     | Yes               |                                                                                                            |
 | StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception                                           |
 | StringReplace   | Yes               |                                                                                                            |
+| StringLPad      | Yes               |                                                                                                            |
 | StringRPad      | Yes               |                                                                                                            |
 | StringSpace     | Yes               |                                                                                                            |
 | StringTranslate | Yes               |                                                                                                            |
@@ -92,7 +93,7 @@ incompatible expressions.
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
-|----------------|------------------------------| ----------------- |----------------------------------------------------------------------------------------------------------------------|
+| -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
 | DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
@@ -129,7 +130,7 @@ incompatible expressions.
 | Expm1          | `expm1`   | Yes               |                                   |
 | Floor          | `floor`   | Yes               |                                   |
 | Hex            | `hex`     | Yes               |                                   |
-| IntegralDivide | `div`     | Yes               | ANSI mode is not supported.       |
+| IntegralDivide | `div`     | Yes               |                                   |
 | IsNaN          | `isnan`   | Yes               |                                   |
 | Log            | `log`     | Yes               |                                   |
 | Log2           | `log2`    | Yes               |                                   |
@@ -139,7 +140,7 @@ incompatible expressions.
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
 | Remainder      | `%`       | Yes               | ANSI mode is not supported.       |
-| Round          | `round`   | Yes               | ANSI mode is not supported.       |
+| Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |
@@ -207,6 +208,7 @@ incompatible expressions.
 | ArrayContains  | Yes               |                                                                                                                                                                                           |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
+| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
 | ArrayInsert    | No                |                                                                                                                                                                                           |
 | ArrayIntersect | No                |                                                                                                                                                                                           |
 | ArrayJoin      | No                |                                                                                                                                                                                           |
