@@ -19,17 +19,20 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal, NamedLambdaVariable}
-import org.apache.spark.sql.types.StringType
+import scala.collection.immutable
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, optExprWithInfo}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, LambdaFunction}
 
-object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+object CometLambdaFunction extends CometExpressionSerde[LambdaFunction] {
+
+  override def getSupportLevel(expr: LambdaFunction): SupportLevel = {
+    Incompatible(None)
+  }
+
   override def convert(
-      expr: NamedLambdaVariable,
-      inputs: Seq[Attribute],
+      expr: LambdaFunction,
+      inputs: immutable.Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val namedVariableExprProto = exprToProto(Literal(null, StringType), Seq.empty)
-    optExprWithInfo(namedVariableExprProto, expr, expr.children: _*)
+    None
   }
 }
