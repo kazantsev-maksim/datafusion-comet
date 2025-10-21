@@ -19,20 +19,41 @@
 
 package org.apache.comet.serde
 
-import scala.collection.immutable
+import org.apache.spark.sql.catalyst.expressions.{Attribute, LambdaFunction, NamedLambdaVariable}
+import org.apache.spark.sql.types.{IntegerType, StringType}
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, LambdaFunction}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometLambdaFunction extends CometExpressionSerde[LambdaFunction] {
 
-  override def getSupportLevel(expr: LambdaFunction): SupportLevel = {
-    Incompatible(None)
-  }
-
   override def convert(
       expr: LambdaFunction,
-      inputs: immutable.Seq[Attribute],
+      inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val lambdaFunctionExprProto = exprToProto(expr.function, inputs, binding)
+    expr.children.foreach { expr =>
+      val exprProto = exprToProto(expr, inputs, binding)
+      // scalastyle:off println
+      println(expr.sql + " " + exprProto)
+    // scalastyle:on println line=35 column=6
+    }
+    // scalastyle:off println
+    println("BOOOM: " + lambdaFunctionExprProto)
+    // scalastyle:on println line=36 column=4
     None
+  }
+}
+
+object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+
+  override def convert(
+      expr: NamedLambdaVariable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val literalBuilder = LiteralOuterClass.Literal
+      .newBuilder()
+      .setDatatype(serializeDataType(StringType).get)
+      .setStringVal(expr.name)
+    Some(ExprOuterClass.Expr.newBuilder().setLiteral(literalBuilder).build())
   }
 }

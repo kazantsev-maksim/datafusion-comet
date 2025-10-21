@@ -21,13 +21,11 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse}
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, LambdaFunction, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.CometFlatten.isTypeSupported
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.CometExprShim
 
@@ -511,18 +509,15 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
 object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
-  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
-    expr.function.children.headOption match {
-      case Some(_: IsNotNull) => Compatible()
-      case _ => Unsupported()
-    }
-  }
-
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    CometArrayCompact.convert(expr, inputs, binding)
+    // scalastyle:off println
+    println("DOOOOM" + expr.function.isInstanceOf[LambdaFunction])
+    // scalastyle:on println line=518 column=4
+    exprToProto(expr.function, inputs, binding)
+    None
   }
 }
 

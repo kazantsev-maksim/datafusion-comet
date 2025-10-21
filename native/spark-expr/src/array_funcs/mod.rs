@@ -19,6 +19,7 @@ mod array_insert;
 mod array_repeat;
 mod get_array_struct_fields;
 mod list_extract;
+mod array_filter;
 
 pub use array_insert::ArrayInsert;
 pub use array_repeat::spark_array_repeat;

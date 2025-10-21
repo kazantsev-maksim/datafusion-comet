@@ -238,6 +238,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[SparkPartitionID] -> CometSparkPartitionId)
 
   private val lambdaExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[LambdaFunction] -> CometLambdaFunction,
     classOf[NamedLambdaVariable] -> CometNamedLambdaVariable)
 
   /**
