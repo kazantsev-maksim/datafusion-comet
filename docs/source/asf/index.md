@@ -17,9 +17,16 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
-  <div class="bd-toc-item active">
-    {{ toctree(maxdepth=4, collapse=True, includehidden=True, titles_only=True) }}
-  </div>
-</nav>
+# ASF Links
 
+```{toctree}
+:maxdepth: 1
+:caption: ASF Links
+
+Apache Software Foundation <https://apache.org>
+License <https://www.apache.org/licenses/>
+Donate <https://www.apache.org/foundation/sponsorship.html>
+Thanks <https://www.apache.org/foundation/thanks.html>
+Security <https://www.apache.org/security/>
+Code of conduct <https://www.apache.org/foundation/policies/conduct.html>
+```

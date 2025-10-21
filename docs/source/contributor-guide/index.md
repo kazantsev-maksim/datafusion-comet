@@ -17,9 +17,21 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
-  <div class="bd-toc-item active">
-    {{ toctree(maxdepth=4, collapse=True, includehidden=True, titles_only=True) }}
-  </div>
-</nav>
+# Comet Contributor Guide
 
+```{toctree}
+:maxdepth: 2
+:caption: Contributor Guide
+
+Getting Started <contributing>
+Comet Plugin Overview <plugin_overview>
+Development Guide <development>
+Debugging Guide <debugging>
+Benchmarking Guide <benchmarking>
+Adding a New Expression <adding_a_new_expression>
+Tracing <tracing>
+Profiling Native Code <profiling_native_code>
+Spark SQL Tests <spark-sql-tests.md>
+Roadmap <roadmap.md>
+Github and Issue Tracker <https://github.com/apache/datafusion-comet>
+```

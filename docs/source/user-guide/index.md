@@ -17,9 +17,15 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
-  <div class="bd-toc-item active">
-    {{ toctree(maxdepth=4, collapse=True, includehidden=True, titles_only=True) }}
-  </div>
-</nav>
+# Comet User Guide
 
+```{toctree}
+:maxdepth: 2
+:caption: User Guides
+
+0.12.0-SNAPSHOT <latest/index>
+0.11.x <0.11/index>
+0.10.x <0.10/index>
+0.9.x <0.9/index>
+0.8.x <0.8/index>
+```

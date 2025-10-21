@@ -243,7 +243,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
@@ -252,7 +252,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
-  private val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
+  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
     classOf[Average] -> CometAverage,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
@@ -582,9 +582,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     cometExpr match {
       case Some(handler) =>
-        handler
-          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-          .convert(aggExpr, fn, inputs, binding, conf)
+        val aggHandler = handler.asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+        val exprConfName = aggHandler.getExprConfigName(fn)
+        if (!CometConf.isExprEnabled(exprConfName)) {
+          withInfo(
+            aggExpr,
+            "Expression support is disabled. Set " +
+              s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
+          return None
+        }
+        aggHandler.convert(aggExpr, fn, inputs, binding, conf)
       case _ =>
         withInfo(
           aggExpr,
@@ -693,46 +700,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
-      // ToPrettyString is new in Spark 3.5
-      case _
-          if expr.getClass.getSimpleName == "ToPrettyString" && expr
-            .isInstanceOf[UnaryExpression] && expr.isInstanceOf[TimeZoneAwareExpression] =>
-        val child = expr.asInstanceOf[UnaryExpression].child
-        val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
-
-        val castSupported = CometCast.isSupported(
-          child.dataType,
-          DataTypes.StringType,
-          timezoneId,
-          CometEvalMode.TRY)
-
-        val isCastSupported = castSupported match {
-          case Compatible(_) => true
-          case Incompatible(_) => true
-          case _ => false
-        }
-
-        if (isCastSupported) {
-          exprToProtoInternal(child, inputs, binding) match {
-            case Some(p) =>
-              val toPrettyString = ExprOuterClass.ToPrettyString
-                .newBuilder()
-                .setChild(p)
-                .setTimezone(timezoneId.getOrElse("UTC"))
-                .setBinaryOutputStyle(binaryOutputStyle)
-                .build()
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setToPrettyString(toPrettyString)
-                  .build())
-            case _ =>
-              withInfo(expr, child)
-              None
-          }
-        } else {
-          None
-        }
 
       case SortOrder(child, direction, nullOrdering, _) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1875,6 +1842,17 @@ trait CometExpressionSerde[T <: Expression] {
  * Trait for providing serialization logic for aggregate expressions.
  */
 trait CometAggregateExpressionSerde[T <: AggregateFunction] {
+
+  /**
+   * Get a short name for the expression that can be used as part of a config key related to the
+   * expression, such as enabling or disabling that expression.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @return
+   *   Short name for the expression, defaulting to the Spark class name
+   */
+  def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
