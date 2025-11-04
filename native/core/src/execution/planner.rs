@@ -98,7 +98,7 @@ use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
-use datafusion_comet_proto::spark_expression::ListLiteral;
+use datafusion_comet_proto::spark_expression::{LambdaFunction, ListLiteral};
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -3044,6 +3044,17 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn test_create_lambda_func() {
+        let lambda_function = spark_expression::LambdaFunction {
+            args: vec![],
+            condition: Some(Box::new(spark_expression::BinaryExpr{
+
+            })),
+        };
+
     }
 
     const STRING_TYPE_ID: i32 = 7;

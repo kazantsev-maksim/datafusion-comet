@@ -86,6 +86,8 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
+    LambdaVariable lambda_variable = 65;
+    LambdaFunction lambda_function = 66;
   }
 }
 
@@ -415,4 +417,14 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+message LambdaVariable {
+  string arg = 1;
+  DataType datatype = 2;
+}
+
+message LambdaFunction {
+  repeated LambdaVariable args = 1;
+  Expr condition = 2;
 }

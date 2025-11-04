@@ -507,17 +507,28 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with ArraysBase {
+
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
+    val dataType = expr.argument.dataType
+    if (!isTypeSupported(dataType)) {
+      return Unsupported(Some(s"Data type not supported: $dataType."))
+    }
+    if (expr.function.asInstanceOf[LambdaFunction].arguments.length != 1) {
+      return Unsupported(Some("Comet only supports lambda function with one input argument."))
+    }
+    Compatible(None)
+  }
 
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // scalastyle:off println
-    println("DOOOOM" + expr.function.isInstanceOf[LambdaFunction])
-    // scalastyle:on println line=518 column=4
-    exprToProto(expr.function, inputs, binding)
-    None
+    val arrayExprProto = exprToProtoInternal(expr.argument, inputs, binding)
+    val lambdaFunctionExprProto = exprToProtoInternal(expr.function, inputs, binding)
+    val arrayFilterScalarExpr =
+      scalarFunctionExprToProto("array_filter", arrayExprProto, lambdaFunctionExprProto)
+    optExprWithInfo(arrayFilterScalarExpr, expr, expr.children: _*)
   }
 }
 

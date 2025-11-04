@@ -16,44 +16,77 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.comet.serde
 
+import scala.jdk.CollectionConverters.asJavaIterableConverter
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, LambdaFunction, NamedLambdaVariable}
-import org.apache.spark.sql.types.{IntegerType, StringType}
+import org.apache.spark.sql.types.DataType
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.ExprOuterClass.LambdaVariable
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
-object CometLambdaFunction extends CometExpressionSerde[LambdaFunction] {
+object CometLambdaFunction extends CometExpressionSerde[LambdaFunction] with LambdaBase {
 
   override def convert(
       expr: LambdaFunction,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val lambdaFunctionExprProto = exprToProto(expr.function, inputs, binding)
-    expr.children.foreach { expr =>
-      val exprProto = exprToProto(expr, inputs, binding)
-      // scalastyle:off println
-      println(expr.sql + " " + exprProto)
-    // scalastyle:on println line=35 column=6
+    val conditionExprProto = exprToProtoInternal(expr.function, inputs, binding)
+    val argsExprProto = expr.arguments.map(arg => lambdaVariable2Proto(arg.name, arg.dataType))
+    if (argsExprProto.forall(_.isDefined) && conditionExprProto.isDefined) {
+      val LambdaFunctionBuilder = ExprOuterClass.LambdaFunction
+        .newBuilder()
+        .setCondition(conditionExprProto.get)
+        .addAllArgs(argsExprProto.map(_.get.build()).asJava)
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setLambdaFunction(LambdaFunctionBuilder)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
     }
-    // scalastyle:off println
-    println("BOOOM: " + lambdaFunctionExprProto)
-    // scalastyle:on println line=36 column=4
-    None
   }
 }
 
-object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+object CometNamedLambdaVariable
+    extends CometExpressionSerde[NamedLambdaVariable]
+    with LambdaBase {
 
   override def convert(
       expr: NamedLambdaVariable,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val literalBuilder = LiteralOuterClass.Literal
-      .newBuilder()
-      .setDatatype(serializeDataType(StringType).get)
-      .setStringVal(expr.name)
-    Some(ExprOuterClass.Expr.newBuilder().setLiteral(literalBuilder).build())
+    val lambdaVariableExprProto = lambdaVariable2Proto(expr.name, expr.dataType)
+    if (lambdaVariableExprProto.isDefined) {
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setLambdaVariable(lambdaVariableExprProto.get)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
+  }
+}
+
+sealed trait LambdaBase {
+  def lambdaVariable2Proto(
+      argName: String,
+      dataType: DataType): Option[LambdaVariable.Builder] = {
+    val dataTypeExpr = serializeDataType(dataType)
+    if (dataTypeExpr.isDefined) {
+      Some(
+        ExprOuterClass.LambdaVariable
+          .newBuilder()
+          .setDatatype(dataTypeExpr.get)
+          .setArg(argName))
+    } else {
+      None
+    }
   }
 }
