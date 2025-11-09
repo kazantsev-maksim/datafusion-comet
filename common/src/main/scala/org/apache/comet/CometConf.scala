@@ -84,10 +84,9 @@ object CometConf extends ShimCometConf {
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
         "Comet to read Parquet data source. Note that to enable native vectorized execution, " +
-        "both this config and `spark.comet.exec.enabled` need to be enabled. By default, this " +
-        "config is the value of the env var `ENABLE_COMET` if set, or true otherwise.")
+        "both this config and `spark.comet.exec.enabled` need to be enabled.")
     .booleanConf
-    .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
+    .createWithEnvVarOrDefault("ENABLE_COMET", true)
 
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .category(CATEGORY_SCAN)
@@ -119,9 +118,7 @@ object CometConf extends ShimCometConf {
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
-    .createWithDefault(sys.env
-      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
-      .toLowerCase(Locale.ROOT))
+    .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
@@ -268,41 +265,13 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
+  val COMET_ONHEAP_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .category(CATEGORY_TESTING)
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
-        "when running Spark in on-heap mode. " +
-        "This config is optional. If this is not specified, it will be set to " +
-        s"`spark.comet.memory.overhead.factor` * `spark.executor.memory`. $TUNING_GUIDE.")
-    .internal()
+        "when running Spark in on-heap mode.")
     .bytesConf(ByteUnit.MiB)
-    .createOptional
-
-  val COMET_MEMORY_OVERHEAD_FACTOR: ConfigEntry[Double] =
-    conf("spark.comet.memory.overhead.factor")
-      .category(CATEGORY_TESTING)
-      .doc(
-        "Fraction of executor memory to be allocated as additional memory for Comet " +
-          "when running Spark in on-heap mode. " +
-          s"$TUNING_GUIDE.")
-      .internal()
-      .doubleConf
-      .checkValue(
-        factor => factor > 0,
-        "Ensure that Comet memory overhead factor is a double greater than 0")
-      .createWithDefault(0.2)
-
-  val COMET_MEMORY_OVERHEAD_MIN_MIB: ConfigEntry[Long] = conf("spark.comet.memory.overhead.min")
-    .category(CATEGORY_TESTING)
-    .doc("Minimum amount of additional memory to be allocated per executor process for Comet, " +
-      s"in MiB, when running Spark in on-heap mode. $TUNING_GUIDE.")
-    .internal()
-    .bytesConf(ByteUnit.MiB)
-    .checkValue(
-      _ >= 0,
-      "Ensure that Comet memory overhead min is a long greater than or equal to 0")
-    .createWithDefault(384)
+    .createWithDefault(1024)
 
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
@@ -425,18 +394,8 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
-  val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
-    conf("spark.comet.columnar.shuffle.memorySize")
-      .internal()
-      .category(CATEGORY_TESTING)
-      .doc("Amount of memory to reserve for columnar shuffle when running in on-heap mode. " +
-        s"$TUNING_GUIDE.")
-      .bytesConf(ByteUnit.MiB)
-      .createOptional
-
-  val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
+  val COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
-      .internal()
       .category(CATEGORY_TESTING)
       .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
         s"when running in on-heap mode. $TUNING_GUIDE.")
@@ -497,16 +456,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.explain.verbose.enabled")
+  val COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE = "verbose"
+  val COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK = "fallback"
+
+  val COMET_EXTENDED_EXPLAIN_FORMAT: ConfigEntry[String] =
+    conf("spark.comet.explain.format")
       .category(CATEGORY_EXEC_EXPLAIN)
-      .doc(
-        "When this setting is enabled, Comet's extended explain output will provide the full " +
-          "query plan annotated with fallback reasons as well as a summary of how much of " +
-          "the plan was accelerated by Comet. When this setting is disabled, a list of fallback " +
-          "reasons will be provided instead.")
-      .booleanConf
-      .createWithDefault(false)
+      .doc("Choose extended explain output. The default format of " +
+        s"'$COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE' will provide the full query plan annotated " +
+        "with fallback reasons as well as a summary of how much of the plan was accelerated " +
+        s"by Comet. The format '$COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK' provides a list of " +
+        "fallback reasons instead.")
+      .stringConf
+      .checkValues(
+        Set(COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE, COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK))
+      .createWithDefault(COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)
 
   val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.native.enabled")
@@ -523,7 +487,6 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log all plan transformations performed " +
         "in physical optimizer rules. Default: false")
-      .internal()
       .booleanConf
       .createWithDefault(false)
 
@@ -532,8 +495,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log warnings for all fallback reasons.")
       .booleanConf
-      .createWithDefault(
-        sys.env.getOrElse("ENABLE_COMET_LOG_FALLBACK_REASONS", "false").toBoolean)
+      .createWithEnvVarOrDefault("ENABLE_COMET_LOG_FALLBACK_REASONS", false)
 
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
@@ -558,15 +520,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_ENABLE_ONHEAP_MODE: ConfigEntry[Boolean] =
+  val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
       .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
-      .internal()
       .booleanConf
-      .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
+      .createWithEnvVarOrDefault("ENABLE_COMET_ONHEAP", false)
 
-  val COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] =
+  val COMET_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] =
     conf("spark.comet.exec.memoryPool")
       .category(CATEGORY_TUNING)
       .doc(
@@ -576,19 +537,18 @@ object CometConf extends ShimCometConf {
       .stringConf
       .createWithDefault("fair_unified")
 
-  val COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
+  val COMET_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
     "spark.comet.exec.onHeap.memoryPool")
-    .category(CATEGORY_TUNING)
+    .category(CATEGORY_TESTING)
     .doc(
       "The type of memory pool to be used for Comet native execution " +
         "when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, " +
         "`greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, " +
         "and `unbounded`.")
-    .internal()
     .stringConf
     .createWithDefault("greedy_task_shared")
 
-  val COMET_EXEC_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
+  val COMET_OFFHEAP_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
@@ -743,6 +703,13 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
+  val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
+    .category(CATEGORY_TESTING)
+    .doc("Experimental option to enable strict testing, which will fail tests that could be " +
+      "more comprehensive, such as checking for a specific fallback reason.")
+    .booleanConf
+    .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,
@@ -772,6 +739,10 @@ object CometConf extends ShimCometConf {
 
   def getExprAllowIncompatConfigKey(name: String): String = {
     s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.allowIncompatible"
+  }
+
+  def getExprAllowIncompatConfigKey(exprClass: Class[_]): String = {
+    s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.${exprClass.getSimpleName}.allowIncompatible"
   }
 
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
@@ -895,6 +866,36 @@ private class TypedConfigBuilder[T](
     CometConf.register(conf)
     conf
   }
+
+  /**
+   * Creates a [[ConfigEntry]] that has a default value, with support for environment variable
+   * override.
+   *
+   * The value is resolved in the following priority order:
+   *   1. Spark config value (if set) 2. Environment variable value (if set) 3. Default value
+   *
+   * @param envVar
+   *   The environment variable name to check for override value
+   * @param default
+   *   The default value to use if neither config nor env var is set
+   * @return
+   *   A ConfigEntry with environment variable support
+   */
+  def createWithEnvVarOrDefault(envVar: String, default: T): ConfigEntry[T] = {
+    val transformedDefault = converter(sys.env.getOrElse(envVar, stringConverter(default)))
+    val conf = new ConfigEntryWithDefault[T](
+      parent.key,
+      transformedDefault,
+      converter,
+      stringConverter,
+      parent._doc,
+      parent._category,
+      parent._public,
+      parent._version,
+      Some(envVar))
+    CometConf.register(conf)
+    conf
+  }
 }
 
 private[comet] abstract class ConfigEntry[T](
@@ -922,6 +923,11 @@ private[comet] abstract class ConfigEntry[T](
 
   def defaultValueString: String
 
+  /**
+   * The environment variable name that can override this config's default value, if applicable.
+   */
+  def envVar: Option[String] = None
+
   override def toString: String = {
     s"ConfigEntry(key=$key, defaultValue=$defaultValueString, doc=$doc, " +
       s"public=$isPublic, version=$version)"
@@ -936,11 +942,14 @@ private[comet] class ConfigEntryWithDefault[T](
     doc: String,
     category: String,
     isPublic: Boolean,
-    version: String)
+    version: String,
+    _envVar: Option[String] = None)
     extends ConfigEntry(key, valueConverter, stringConverter, doc, category, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
 
   override def defaultValueString: String = stringConverter(_defaultValue)
+
+  override def envVar: Option[String] = _envVar
 
   def get(conf: SQLConf): T = {
     val tmp = conf.getConfString(key, null)
