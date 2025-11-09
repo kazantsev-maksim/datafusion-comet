@@ -54,27 +54,33 @@ git apply ../datafusion-comet/dev/diffs/3.4.3.diff
 
 ## 3. Run Spark SQL Tests
 
-#### Use the following commands to run the Spark SQL test suite locally.
+### Use the following commands to run the Spark SQL test suite locally.
+
+Optionally, enable Comet fallback logging, so that all fallback reasons are logged at `WARN` level.
 
 ```shell
-ENABLE_COMET=true build/sbt catalyst/test
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
+export ENABLE_COMET_LOG_FALLBACK_REASONS=true
 ```
-#### Steps to run individual test suites through SBT
+
+```shell
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt catalyst/test
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
+```
+### Steps to run individual test suites through SBT
 1. Open SBT with Comet enabled
 ```shell
-ENABLE_COMET=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true 
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true
 ```
 2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
 ```shell
  sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z "SPARK-35568"
 ```
-#### Steps to run individual test suites in IntelliJ IDE
+### Steps to run individual test suites in IntelliJ IDE
 1. Add below configuration in VM Options for your test case (apache-spark repository)
 ```shell
 -Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED

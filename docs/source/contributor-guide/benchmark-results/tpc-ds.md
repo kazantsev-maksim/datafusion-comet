@@ -23,87 +23,27 @@ The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 
 data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
 and we encourage you to run these benchmarks in your own environments.
 
+The operating system is Ubuntu 22.04.5 LTS.
+
 The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
 
-![](../../_static/images/benchmark-results/0.9.0/tpcds_allqueries.png)
+![](../../_static/images/benchmark-results/0.11.0/tpcds_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each query.
 
-![](../../_static/images/benchmark-results/0.9.0/tpcds_queries_compare.png)
+![](../../_static/images/benchmark-results/0.11.0/tpcds_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
 
-![](../../_static/images/benchmark-results/0.9.0/tpcds_queries_speedup_rel.png)
+![](../../_static/images/benchmark-results/0.11.0/tpcds_queries_speedup_rel.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
 
-![](../../_static/images/benchmark-results/0.9.0/tpcds_queries_speedup_abs.png)
+![](../../_static/images/benchmark-results/0.11.0/tpcds_queries_speedup_abs.png)
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](0.9.0/spark-tpcds.json)
-- [Comet](0.9.0/comet-tpcds.json)
+- [Spark](spark-3.5.3-tpcds.json)
+- [Comet](comet-0.11.0-tpcds.json)
 
-# Scripts
-
-Here are the scripts that were used to generate these results.
-
-## Apache Spark
-
-```shell
-#!/bin/bash
-$SPARK_HOME/bin/spark-submit \
-    --master $SPARK_MASTER \
-    --conf spark.driver.memory=8G \
-    --conf spark.executor.memory=32G \
-    --conf spark.executor.instances=2 \
-    --conf spark.executor.cores=8 \
-    --conf spark.cores.max=16 \
-    --conf spark.eventLog.enabled=true \
-    tpcbench.py \
-    --benchmark tpcds \
-    --name spark \
-    --data /mnt/bigdata/tpcds/sf100/ \
-    --queries ../../tpcds/ \
-    --output . \
-    --iterations 1
-```
-
-## Apache Spark + Comet
-
-```shell
-#!/bin/bash
-export SPARK_HOME=/opt/spark-3.5.6-bin-hadoop3/
-export SPARK_MASTER=spark://woody:7077
-export COMET_JAR=/home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.9.0.jar
-$SPARK_HOME/bin/spark-submit \
-    --master $SPARK_MASTER \
-    --conf spark.driver.memory=8G \
-    --conf spark.executor.instances=2 \
-    --conf spark.executor.memory=16G \
-    --conf spark.executor.cores=8 \
-    --total-executor-cores=16 \
-    --conf spark.eventLog.enabled=true \
-    --conf spark.driver.maxResultSize=2G \
-    --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g \
-    --jars $COMET_JAR \
-    --conf spark.driver.extraClassPath=$COMET_JAR \
-    --conf spark.executor.extraClassPath=$COMET_JAR \
-    --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.comet.enabled=true \
-    --conf spark.comet.cast.allowIncompatible=true \
-    --conf spark.comet.exec.replaceSortMergeJoin=false \
-    --conf spark.comet.exec.sortMergeJoinWithJoinFilter.enabled=false \
-    --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.exec.shuffle.mode=auto \
-    --conf spark.comet.exec.shuffle.compression.codec=lz4 \
-    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    tpcbench.py \
-    --name comet \
-    --benchmark tpcds \
-    --data /mnt/bigdata/tpcds/sf100/ \
-    --queries ../../tpcds/ \
-    --output . \
-    --iterations 1
-```
+The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).

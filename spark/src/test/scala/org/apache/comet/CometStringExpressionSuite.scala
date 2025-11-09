@@ -19,11 +19,132 @@
 
 package org.apache.comet
 
+import scala.util.Random
+
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
+
+  test("lpad string") {
+    testStringPadding("lpad")
+  }
+
+  test("rpad string") {
+    testStringPadding("rpad")
+  }
+
+  test("lpad binary") {
+    testBinaryPadding("lpad")
+  }
+
+  test("rpad binary") {
+    testBinaryPadding("rpad")
+  }
+
+  private def testStringPadding(expr: String): Unit = {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("str", DataTypes.StringType, nullable = true),
+        StructField("len", DataTypes.IntegerType, nullable = true),
+        StructField("pad", DataTypes.StringType, nullable = true)))
+    // scalastyle:off
+    val edgeCases = Seq(
+      "é", // unicode 'e\\u{301}'
+      "é", // unicode '\\u{e9}'
+      "తెలుగు")
+    // scalastyle:on
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(maxStringLength = 6, customStrings = edgeCases))
+    df.createOrReplaceTempView("t1")
+
+    // test all combinations of scalar and array arguments
+    for (str <- Seq("'hello'", "str")) {
+      for (len <- Seq("6", "-6", "0", "len % 10")) {
+        for (pad <- Seq(Some("'x'"), Some("'zzz'"), Some("pad"), None)) {
+          val sql = pad match {
+            case Some(p) =>
+              // 3 args
+              s"SELECT $str, $len, $expr($str, $len, $p) FROM t1 ORDER BY str, len, pad"
+            case _ =>
+              // 2 args (default pad of ' ')
+              s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
+          }
+          val isLiteralStr = str == "'hello'"
+          val isLiteralLen = !len.contains("len")
+          val isLiteralPad = !pad.contains("pad")
+          if (isLiteralStr && isLiteralLen && isLiteralPad) {
+            // all arguments are literal, so Spark constant folding will kick in
+            // and pad function will not be evaluated by Comet
+            checkSparkAnswerAndOperator(sql)
+          } else if (isLiteralStr) {
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              "Scalar values are not supported for the str argument")
+          } else if (!isLiteralPad) {
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              "Only scalar values are supported for the pad argument")
+          } else {
+            checkSparkAnswerAndOperator(sql)
+          }
+        }
+      }
+    }
+  }
+
+  private def testBinaryPadding(expr: String): Unit = {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("str", DataTypes.BinaryType, nullable = true),
+        StructField("len", DataTypes.IntegerType, nullable = true),
+        StructField("pad", DataTypes.BinaryType, nullable = true)))
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    df.createOrReplaceTempView("t1")
+
+    // test all combinations of scalar and array arguments
+    for (str <- Seq("unhex('DDEEFF')", "str")) {
+      // Spark does not support negative length for lpad/rpad with binary input and Comet does
+      // not support abs yet, so use `10 + len % 10` to avoid negative length
+      for (len <- Seq("6", "0", "10 + len % 10")) {
+        for (pad <- Seq(Some("unhex('CAFE')"), Some("pad"), None)) {
+
+          val sql = pad match {
+            case Some(p) =>
+              // 3 args
+              s"SELECT $str, $len, $expr($str, $len, $p) FROM t1 ORDER BY str, len, pad"
+            case _ =>
+              // 2 args (default pad of ' ')
+              s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
+          }
+
+          val isLiteralStr = str != "str"
+          val isLiteralLen = !len.contains("len")
+          val isLiteralPad = !pad.contains("pad")
+
+          if (isLiteralStr && isLiteralLen && isLiteralPad) {
+            // all arguments are literal, so Spark constant folding will kick in
+            // and pad function will not be evaluated by Comet
+            checkSparkAnswerAndOperator(sql)
+          } else {
+            // Comet will fall back to Spark because the plan contains a staticinvoke instruction
+            // which is not supported
+            checkSparkAnswerAndFallbackReason(sql, "staticinvoke is not supported")
+          }
+        }
+      }
+    }
+  }
 
   test("Various String scalar functions") {
     val table = "names"
@@ -51,7 +172,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Chr") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(col varchar(20)) using parquet")
@@ -64,7 +185,7 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("Chr with null character") {
     // test compatibility with Spark, spark supports chr(0)
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "test0"
       withTable(table) {
         sql(s"create table $table(c9 int, c4 int) using parquet")
@@ -95,20 +216,27 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  test("InitCap") {
+  test("InitCap compatible cases") {
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
-      sql(
-        s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-          "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
-          "(6, 'robert rose-smith'), (7, 'james ähtäri')")
-      if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-        // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+        sql(
+          s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
+            "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+            "(7, 'james ähtäri')")
         checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
-      } else {
-        checkSparkAnswer(s"SELECT initcap(name) FROM $table")
       }
+    }
+  }
+
+  test("InitCap incompatible cases") {
+    val table = "names"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      // Comet and Spark differ on hyphenated names
+      sql(s"insert into $table values(6, 'robert rose-smith')")
+      checkSparkAnswer(s"SELECT initcap(name) FROM $table")
     }
   }
 
@@ -246,6 +374,22 @@ class CometStringExpressionSuite extends CometTestBase {
         spark.range(1024).map(_ => "100").toDF(),
         filter,
         enableDictionary = false)
+    }
+  }
+
+  test("string_space") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
+    }
+  }
+
+  test("string_space with dictionary") {
+    val data = (0 until 1000).map(i => Tuple1(i % 5))
+
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
+      }
     }
   }
 

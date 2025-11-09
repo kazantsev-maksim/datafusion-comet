@@ -23,6 +23,7 @@ package spark.spark_operator;
 
 import "expr.proto";
 import "partitioning.proto";
+import "types.proto";
 
 option java_package = "org.apache.comet.serde";
 
@@ -77,6 +78,8 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  // Whether native code can assume ownership of batches that it receives
+  bool arrow_ffi_safe = 3;
 }
 
 message NativeScan {
@@ -102,6 +105,7 @@ message NativeScan {
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
   map<string, string> object_store_options = 13;
+  bool encryption_enabled = 14;
 }
 
 message Projection {
@@ -110,14 +114,12 @@ message Projection {
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
-  bool use_datafusion_filter = 2;
-  // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
-  bool wrap_child_in_copy_exec = 3;
 }
 
 message Sort {
   repeated spark.spark_expression.Expr sort_orders = 1;
   optional int32 fetch = 3;
+  optional int32 skip = 4;
 }
 
 message HashAggregate {

@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, Una
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.serde.QueryPlanSerde.supportedSortType
 
@@ -43,6 +44,7 @@ case class CometTakeOrderedAndProjectExec(
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     limit: Int,
+    offset: Int,
     sortOrder: Seq[SortOrder],
     projectList: Seq[NamedExpression],
     child: SparkPlan)
@@ -68,7 +70,7 @@ case class CometTakeOrderedAndProjectExec(
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
-    if (childRDD.getNumPartitions == 0) {
+    if (childRDD.getNumPartitions == 0 || limit == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)
     } else {
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
@@ -101,7 +103,7 @@ case class CometTakeOrderedAndProjectExec(
 
       singlePartitionRDD.mapPartitionsInternal { iter =>
         val topKAndProjection = CometExecUtils
-          .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit)
+          .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit, offset)
           .get
         val it = CometExec.getCometIterator(Seq(iter), output.length, topKAndProjection, 1, 0)
         setSubqueries(it.id, this)
@@ -122,7 +124,8 @@ case class CometTakeOrderedAndProjectExec(
     val orderByString = truncatedString(sortOrder, "[", ",", "]", maxFields)
     val outputString = truncatedString(output, "[", ",", "]", maxFields)
 
-    s"CometTakeOrderedAndProjectExec(limit=$limit, orderBy=$orderByString, output=$outputString)"
+    s"CometTakeOrderedAndProjectExec(limit=$limit, offset=$offset, " +
+      s"orderBy=$orderByString, output=$outputString)"
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -130,11 +133,22 @@ case class CometTakeOrderedAndProjectExec(
 }
 
 object CometTakeOrderedAndProjectExec {
-  // TODO: support offset for Spark 3.4
   def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
-    val exprs = plan.projectList.map(exprToProto(_, plan.child.output))
-    val sortOrders = plan.sortOrder.map(exprToProto(_, plan.child.output))
-    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && plan.offset == 0 &&
+    val exprs = plan.projectList.map { p =>
+      val o = exprToProto(p, plan.child.output)
+      if (o.isEmpty) {
+        withInfo(plan, s"unsupported projection: $p")
+      }
+      o
+    }
+    val sortOrders = plan.sortOrder.map { s =>
+      val o = exprToProto(s, plan.child.output)
+      if (o.isEmpty) {
+        withInfo(plan, s"unsupported sort order: $s")
+      }
+      o
+    }
+    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) &&
     supportedSortType(plan, plan.sortOrder)
   }
 }

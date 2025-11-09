@@ -242,6 +242,13 @@ public final class Native extends NativeBase {
   //      Add batch size, datetimeRebaseModeSpec, metrics(how?)...
 
   /**
+   * Verify that object store options are valid. An exception will be thrown if the provided options
+   * are not valid.
+   */
+  public static native void validateObjectStoreConfig(
+      String filePath, Map<String, String> objectStoreOptions);
+
+  /**
    * Initialize a record batch reader for a PartitionedFile
    *
    * @param filePath
@@ -260,9 +267,12 @@ public final class Native extends NativeBase {
       String sessionTimezone,
       int batchSize,
       boolean caseSensitive,
-      Map<String, String> objectStoreOptions);
+      Map<String, String> objectStoreOptions,
+      CometFileKeyUnwrapper keyUnwrapper,
+      Object metricsNode);
 
   // arrow native version of read batch
+
   /**
    * Read the next batch of data into memory on native side
    *
@@ -273,6 +283,7 @@ public final class Native extends NativeBase {
 
   // arrow native equivalent of currentBatch. 'columnNum' is number of the column in the record
   // batch
+
   /**
    * Load the column corresponding to columnNum in the currently loaded record batch into JVM
    *

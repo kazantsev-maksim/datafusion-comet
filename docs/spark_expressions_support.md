@@ -330,9 +330,9 @@
  - [x] sqrt
  - [x] tan
  - [ ] tanh
- - [ ] try_add
+ - [x] try_add
  - [x] try_divide
- - [ ] try_multiply
+ - [x] try_multiply
  - [x] try_subtract
  - [x] unhex
  - [ ] width_bucket
@@ -349,9 +349,11 @@
  - [ ] input_file_block_length
  - [ ] input_file_block_start
  - [ ] input_file_name
- - [ ] monotonically_increasing_id
+ - [x] monotonically_increasing_id
  - [ ] raise_error
- - [ ] spark_partition_id
+ - [x] rand
+ - [x] randn
+ - [x] spark_partition_id
  - [ ] typeof
  - [x] user
  - [ ] uuid
@@ -406,7 +408,7 @@
  - [ ] levenshtein
  - [ ] locate
  - [x] lower
- - [ ] lpad
+ - [x] lpad
  - [x] ltrim
  - [ ] mask
  - [x] octet_length
@@ -422,7 +424,7 @@
  - [x] repeat
  - [x] replace
  - [ ] right
- - [ ] rpad
+ - [x] rpad
  - [x] rtrim
  - [ ] sentences
  - [ ] soundex

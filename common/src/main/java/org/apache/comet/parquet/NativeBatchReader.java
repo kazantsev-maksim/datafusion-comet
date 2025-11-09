@@ -30,7 +30,6 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import scala.Option;
-import scala.collection.JavaConverters;
 import scala.collection.Seq;
 import scala.collection.mutable.Buffer;
 
@@ -81,6 +80,8 @@ import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
 import org.apache.comet.vector.NativeUtil;
 
+import static scala.jdk.javaapi.CollectionConverters.asJava;
+
 /**
  * A vectorized Parquet reader that reads a Parquet file in a batched fashion.
  *
@@ -113,6 +114,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private InternalRow partitionValues;
   private PartitionedFile file;
   private final Map<String, SQLMetric> metrics;
+  // Unfortunately CometMetricNode is from the "spark" package and cannot be used directly here
+  // TODO: Move it to common package?
+  private Object metricsNode = null;
 
   private StructType sparkSchema;
   private StructType dataSchema;
@@ -186,7 +190,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
-  public NativeBatchReader(AbstractColumnReader[] columnReaders) {
+  private NativeBatchReader(AbstractColumnReader[] columnReaders) {
     // Todo: set useDecimal128 and useLazyMaterialization
     int numColumns = columnReaders.length;
     this.columnReaders = new AbstractColumnReader[numColumns];
@@ -213,7 +217,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useLegacyDateTimestamp,
       StructType partitionSchema,
       InternalRow partitionValues,
-      Map<String, SQLMetric> metrics) {
+      Map<String, SQLMetric> metrics,
+      Object metricsNode) {
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
@@ -228,6 +233,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.footer = footer;
     this.nativeFilter = nativeFilter;
     this.metrics = metrics;
+    this.metricsNode = metricsNode;
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
@@ -255,7 +261,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     ParquetReadOptions readOptions = builder.build();
 
     Map<String, String> objectStoreOptions =
-        JavaConverters.mapAsJavaMap(NativeConfig.extractObjectStoreOptions(conf, file.pathUri()));
+        asJava(NativeConfig.extractObjectStoreOptions(conf, file.pathUri()));
 
     // TODO: enable off-heap buffer when they are ready
     ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
@@ -306,7 +312,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       List<Type> fields = requestedSchema.getFields();
       List<Type> fileFields = fileSchema.getFields();
       ParquetColumn[] parquetFields =
-          JavaConverters.seqAsJavaList(parquetColumn.children()).toArray(new ParquetColumn[0]);
+          asJava(parquetColumn.children()).toArray(new ParquetColumn[0]);
       int numColumns = fields.size();
       if (partitionSchema != null) numColumns += partitionSchema.size();
       columnReaders = new AbstractColumnReader[numColumns];
@@ -409,6 +415,15 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         }
       }
 
+      boolean encryptionEnabled = CometParquetUtils.encryptionEnabled(conf);
+
+      // Create keyUnwrapper if encryption is enabled
+      CometFileKeyUnwrapper keyUnwrapper = null;
+      if (encryptionEnabled) {
+        keyUnwrapper = new CometFileKeyUnwrapper();
+        keyUnwrapper.storeDecryptionKeyRetriever(file.filePath().toString(), conf);
+      }
+
       int batchSize =
           conf.getInt(
               CometConf.COMET_BATCH_SIZE().key(),
@@ -425,7 +440,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               timeZoneId,
               batchSize,
               caseSensitive,
-              objectStoreOptions);
+              objectStoreOptions,
+              keyUnwrapper,
+              metricsNode);
     }
     isInitialized = true;
   }
@@ -433,7 +450,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private ParquetColumn getParquetColumn(MessageType schema, StructType sparkSchema) {
     // We use a different config from the config that is passed in.
     // This follows the setting  used in Spark's SpecificParquetRecordReaderBase
-    Configuration config = new Configuration();
+    Configuration config = new Configuration(conf);
     config.setBoolean(SQLConf.PARQUET_BINARY_AS_STRING().key(), false);
     config.setBoolean(SQLConf.PARQUET_INT96_AS_TIMESTAMP().key(), false);
     config.setBoolean(SQLConf.CASE_SENSITIVE().key(), false);
@@ -618,14 +635,14 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   }
 
   private void checkParquetType(ParquetColumn column) throws IOException {
-    String[] path = JavaConverters.seqAsJavaList(column.path()).toArray(new String[0]);
+    String[] path = asJava(column.path()).toArray(new String[0]);
     if (containsPath(fileSchema, path)) {
       if (column.isPrimitive()) {
         ColumnDescriptor desc = column.descriptor().get();
         ColumnDescriptor fd = fileSchema.getColumnDescription(desc.getPath());
         TypeUtil.checkParquetType(fd, column.sparkType());
       } else {
-        for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(column.children())) {
+        for (ParquetColumn childColumn : asJava(column.children())) {
           checkColumn(childColumn);
         }
       }
@@ -645,7 +662,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
    * file schema, or whether it conforms to the type of the file schema.
    */
   private void checkColumn(ParquetColumn column) throws IOException {
-    String[] path = JavaConverters.seqAsJavaList(column.path()).toArray(new String[0]);
+    String[] path = asJava(column.path()).toArray(new String[0]);
     if (containsPath(fileSchema, path)) {
       if (column.isPrimitive()) {
         ColumnDescriptor desc = column.descriptor().get();
@@ -654,7 +671,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           throw new UnsupportedOperationException("Schema evolution not supported.");
         }
       } else {
-        for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(column.children())) {
+        for (ParquetColumn childColumn : asJava(column.children())) {
           checkColumn(childColumn);
         }
       }
@@ -805,7 +822,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   @SuppressWarnings("deprecation")
   private int loadNextBatch() throws Throwable {
 
-    for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(parquetColumn.children())) {
+    for (ParquetColumn childColumn : asJava(parquetColumn.children())) {
       checkParquetType(childColumn);
     }
 

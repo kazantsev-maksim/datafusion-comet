@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.io.File
 
+import scala.collection.mutable.ListBuffer
 import scala.util.Random
 import scala.util.matching.Regex
 
@@ -30,10 +31,12 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.rules.CometScanTypeChecker
+import org.apache.comet.serde.Compatible
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -321,9 +324,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.DoubleType)
   }
 
-  ignore("cast IntegerType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
+  test("cast IntegerType to DecimalType(10,2)") {
     castTest(generateInts(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast IntegerType to DecimalType(10,2) overflow check") {
+    val intToDecimal10OverflowValues =
+      Seq(Int.MinValue, -100000000, -100000001, 100000000, 100000001, Int.MaxValue).toDF("a")
+    castTest(intToDecimal10OverflowValues, DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast IntegerType to DecimalType check arbitrary scale and precision") {
+    Seq(DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE, 0, 10, 15)
+      .combinations(2)
+      .map({ c =>
+        castTest(generateInts(), DataTypes.createDecimalType(c.head, c.last))
+      })
   }
 
   test("cast IntegerType to StringType") {
@@ -368,8 +384,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.DoubleType)
   }
 
-  ignore("cast LongType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
+  test("cast LongType to DecimalType(10,2)") {
     castTest(generateLongs(), DataTypes.createDecimalType(10, 2))
   }
 
@@ -418,7 +433,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
     }
   }
@@ -478,7 +493,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
     }
   }
@@ -504,8 +519,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DecimalType(10,2)
 
-  ignore("cast DecimalType(10,2) to BooleanType") {
-    // Arrow error: Cast error: Casting from Decimal128(38, 18) to Boolean not supported
+  test("cast DecimalType(10,2) to BooleanType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.BooleanType)
   }
 
@@ -645,7 +659,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to FloatType (partial support)") {
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       castTest(
         gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
@@ -661,7 +675,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DoubleType (partial support)") {
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       castTest(
         gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
@@ -678,7 +692,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DecimalType(10,2) (partial support)") {
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       val values = gen
         .generateStrings(dataSize, "0123456789.", 8)
@@ -767,7 +781,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast StringType to TimestampType") {
     // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
+    withSQLConf((CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key, "true")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
         timestampPattern,
@@ -818,7 +832,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test for invalid inputs
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val values = Seq("-9?", "1-", "0.5")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
@@ -826,8 +840,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from BinaryType
 
-  ignore("cast BinaryType to StringType") {
-    // https://github.com/apache/datafusion-comet/issues/377
+  test("cast BinaryType to StringType") {
     castTest(generateBinary(), DataTypes.StringType)
   }
 
@@ -944,8 +957,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // Complex Types
 
   test("cast StructType to StringType") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -954,7 +965,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // primitives
           checkSparkAnswerAndOperator(
             "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
+          // the same field, add _11 and _12 again when
+          // https://github.com/apache/datafusion-comet/issues/2256 resolved
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_11, _12) as string) FROM tbl")
           // decimals
           // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
           checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
@@ -1034,6 +1047,31 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 0))
   }
 
+  test("cast ArrayType to StringType") {
+    val hasIncompatibleType = (dt: DataType) =>
+      if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
+        true
+      } else {
+        !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+          .isTypeSupported(dt, "a", ListBuffer.empty)
+      }
+    Seq(
+      BooleanType,
+      StringType,
+      ByteType,
+      IntegerType,
+      LongType,
+      ShortType,
+      //      FloatType,
+      //      DoubleType,
+      DecimalType(10, 2),
+      DecimalType(38, 18),
+      BinaryType).foreach { dt =>
+      val input = generateArrays(100, dt)
+      castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
+    }
+  }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
@@ -1060,6 +1098,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def generateLongs(): DataFrame = {
     withNulls(gen.generateLongs(dataSize)).toDF("a")
+  }
+
+  private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
+    import scala.collection.JavaConverters._
+    val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
+    spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/2038
+  test("test implicit cast to dictionary with case when and dictionary type") {
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      withParquetTable((0 until 10000).map(i => (i < 5000, "one")), "tbl") {
+        val df = spark.sql("select case when (_1 = true) then _2 else '' end as aaa from tbl")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
   }
 
   private def generateDecimalsPrecision10Scale2(): DataFrame = {
@@ -1213,8 +1267,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       if (testAnsi) {
         // with ANSI enabled, we should produce the same exception as Spark
         withSQLConf(
-          (SQLConf.ANSI_ENABLED.key, "true"),
-          (CometConf.COMET_ANSI_MODE_ENABLED.key, "true")) {
+          SQLConf.ANSI_ENABLED.key -> "true",
+          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
 
           // cast() should throw exception on invalid inputs when ansi mode is enabled
           val df = data.withColumn("converted", col("a").cast(toType))
@@ -1222,7 +1276,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case (None, None) =>
             // neither system threw an exception
             case (None, Some(e)) =>
-              // Spark succeeded but Comet failed
               throw e
             case (Some(e), None) =>
               // Spark failed but Comet succeeded

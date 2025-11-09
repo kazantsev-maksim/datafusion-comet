@@ -19,12 +19,18 @@
 
 package org.apache.comet.rules
 
-import scala.collection.mutable.ListBuffer
+import java.net.URI
 
+import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
@@ -34,56 +40,94 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions, DataTypeSupport}
+import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
-import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
-case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
+case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with CometTypeShim {
+
+  import CometScanRule._
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
-    if (showTransformations) {
-      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+    if (showTransformations && !newPlan.fastEquals(plan)) {
+      logInfo(s"""
+           |=== Applying Rule $ruleName ===
+           |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
+           |""".stripMargin)
     }
     newPlan
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
-    if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
-      if (!isCometLoaded(conf)) {
-        withInfo(plan, "Comet is not enabled")
-      } else if (!isCometScanEnabled(conf)) {
-        withInfo(plan, "Comet Scan is not enabled")
-      }
-      plan
-    } else {
+    if (!isCometLoaded(conf)) return plan
 
-      def hasMetadataCol(plan: SparkPlan): Boolean = {
-        plan.expressions.exists(_.exists {
-          case a: Attribute =>
-            a.isMetadataCol
-          case _ => false
-        })
-      }
+    def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
+      case _: FileSourceScanExec => true
+      case _: BatchScanExec => true
+      case _ => false
+    }
 
-      plan.transform {
-        case scan if hasMetadataCol(scan) =>
-          withInfo(scan, "Metadata column is not supported")
+    def hasMetadataCol(plan: SparkPlan): Boolean = {
+      plan.expressions.exists(_.exists {
+        case a: Attribute =>
+          a.isMetadataCol
+        case _ => false
+      })
+    }
 
-        // data source V1
-        case scanExec: FileSourceScanExec =>
-          transformV1Scan(scanExec)
+    def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
+      // List of Iceberg metadata tables:
+      // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
+      val metadataTableSuffix = Set(
+        "history",
+        "metadata_log_entries",
+        "snapshots",
+        "entries",
+        "files",
+        "manifests",
+        "partitions",
+        "position_deletes",
+        "all_data_files",
+        "all_delete_files",
+        "all_entries",
+        "all_manifests")
 
-        // data source V2
-        case scanExec: BatchScanExec =>
+      metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+    }
+
+    def transformScan(plan: SparkPlan): SparkPlan = plan match {
+      case scan if !isCometScanEnabled(conf) =>
+        withInfo(scan, "Comet Scan is not enabled")
+
+      case scan if hasMetadataCol(scan) =>
+        withInfo(scan, "Metadata column is not supported")
+
+      // data source V1
+      case scanExec: FileSourceScanExec =>
+        transformV1Scan(scanExec)
+
+      // data source V2
+      case scanExec: BatchScanExec =>
+        if (isIcebergMetadataTable(scanExec)) {
+          withInfo(scanExec, "Iceberg Metadata tables are not supported")
+        } else {
           transformV2Scan(scanExec)
-      }
+        }
+    }
+
+    plan.transform {
+      case scan if isSupportedScanNode(scan) => transformScan(scan)
     }
   }
 
@@ -107,9 +151,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
 
+        val hadoopConf = scanExec.relation.sparkSession.sessionState
+          .newHadoopConfWithOptions(scanExec.relation.options)
+
         // if scan is auto then pick the best available scan
         if (scanImpl == SCAN_AUTO) {
-          scanImpl = selectScan(scanExec, r.partitionSchema)
+          scanImpl = selectScan(scanExec, r.partitionSchema, hadoopConf)
         }
 
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
@@ -156,14 +203,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val encryptionEnabled: Boolean =
-          conf.getConfString("parquet.crypto.factory.class", "").nonEmpty &&
-            conf.getConfString("parquet.encryption.kms.client.class", "").nonEmpty
-
-        if (scanImpl != CometConf.SCAN_NATIVE_COMET && encryptionEnabled) {
-          fallbackReasons +=
-            "Full native scan disabled because encryption is not supported"
-          return withInfos(scanExec, fallbackReasons.toSet)
+        if (encryptionEnabled(hadoopConf) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
+          if (!isEncryptionConfigSupported(hadoopConf)) {
+            return withInfos(scanExec, fallbackReasons.toSet)
+          }
         }
 
         val typeChecker = CometScanTypeChecker(scanImpl)
@@ -214,7 +257,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
         if (schemaSupported && partitionSchemaSupported && scan.pushedAggregate.isEmpty) {
-          val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
+          val cometScan = CometParquetScan(session, scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
             runtimeFilters = scanExec.runtimeFilters)
@@ -257,17 +300,22 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  private def selectScan(scanExec: FileSourceScanExec, partitionSchema: StructType): String = {
+  private def selectScan(
+      scanExec: FileSourceScanExec,
+      partitionSchema: StructType,
+      hadoopConf: Configuration): String = {
 
     val fallbackReasons = new ListBuffer[String]()
 
-    if (CometSparkSessionExtensions.isSpark40Plus) {
-      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT  is not implemented for Spark 4.0.0"
-    }
-
     // native_iceberg_compat only supports local filesystem and S3
-    if (!scanExec.relation.inputFiles
+    if (scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
+
+      val filePath = scanExec.relation.inputFiles.headOption
+      if (filePath.exists(_.startsWith("s3a://"))) {
+        validateObjectStoreConfig(filePath.get, hadoopConf, fallbackReasons)
+      }
+    } else {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
     }
 
@@ -277,26 +325,25 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
 
-    def isComplexType(dt: DataType): Boolean = dt match {
-      case _: StructType | _: ArrayType | _: MapType => true
-      case _ => false
-    }
-
-    def hasMapsContainingStructs(dataType: DataType): Boolean = {
+    def hasUnsupportedType(dataType: DataType): Boolean = {
       dataType match {
-        case s: StructType => s.exists(field => hasMapsContainingStructs(field.dataType))
-        case a: ArrayType => hasMapsContainingStructs(a.elementType)
-        case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+        case s: StructType => s.exists(field => hasUnsupportedType(field.dataType))
+        case a: ArrayType => hasUnsupportedType(a.elementType)
+        case m: MapType =>
+          // maps containing complex types are not supported
+          isComplexType(m.keyType) || isComplexType(m.valueType) ||
+          hasUnsupportedType(m.keyType) || hasUnsupportedType(m.valueType)
+        case dt if isStringCollationType(dt) => true
         case _ => false
       }
     }
 
     val knownIssues =
-      scanExec.requiredSchema.exists(field => hasMapsContainingStructs(field.dataType)) ||
-        partitionSchema.exists(field => hasMapsContainingStructs(field.dataType))
+      scanExec.requiredSchema.exists(field => hasUnsupportedType(field.dataType)) ||
+        partitionSchema.exists(field => hasUnsupportedType(field.dataType))
 
     if (knownIssues) {
-      fallbackReasons += "There are known issues with maps containing structs when using " +
+      fallbackReasons += "Schema contains data types that are not supported by " +
         s"$SCAN_NATIVE_ICEBERG_COMPAT"
     }
 
@@ -319,7 +366,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
 }
 
-case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
+case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
+
+  // this class is intended to be used with a specific scan impl
+  assert(scanImpl != CometConf.SCAN_AUTO)
+
   override def isTypeSupported(
       dt: DataType,
       name: String,
@@ -333,8 +384,73 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
         false
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
         false
+      case dt if isStringCollationType(dt) =>
+        // we don't need specific support for collation in scans, but this
+        // is a convenient place to force the whole query to fall back to Spark for now
+        false
+      case s: StructType if s.fields.isEmpty =>
+        false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
+  }
+}
+
+object CometScanRule extends Logging {
+
+  /**
+   * Validating object store configs can cause requests to be made to S3 APIs (such as when
+   * resolving the region for a bucket). We use a cache to reduce the number of S3 calls.
+   *
+   * The key is the config map converted to a string. The value is the reason that the config is
+   * not valid, or None if the config is valid.
+   */
+  val configValidityMap = new mutable.HashMap[String, Option[String]]()
+
+  /**
+   * We do not expect to see a large number of unique configs within the lifetime of a Spark
+   * session, but we reset the cache once it reaches a fixed size to prevent it growing
+   * indefinitely.
+   */
+  val configValidityMapMaxSize = 1024
+
+  def validateObjectStoreConfig(
+      filePath: String,
+      hadoopConf: Configuration,
+      fallbackReasons: mutable.ListBuffer[String]): Unit = {
+    val objectStoreConfigMap =
+      NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(filePath))
+
+    val cacheKey = objectStoreConfigMap
+      .map { case (k, v) =>
+        s"$k=$v"
+      }
+      .toList
+      .sorted
+      .mkString("\n")
+
+    if (configValidityMap.size >= configValidityMapMaxSize) {
+      logWarning("Resetting S3 object store validity cache")
+      configValidityMap.clear()
+    }
+
+    configValidityMap.get(cacheKey) match {
+      case Some(Some(reason)) =>
+        fallbackReasons += reason
+      case Some(None) =>
+      // previously validated
+      case _ =>
+        try {
+          val objectStoreOptions = objectStoreConfigMap.asJava
+          Native.validateObjectStoreConfig(filePath, objectStoreOptions)
+        } catch {
+          case e: CometNativeException =>
+            val reason = "Object store config not supported by " +
+              s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
+            fallbackReasons += reason
+            configValidityMap.put(cacheKey, Some(reason))
+        }
+    }
+
   }
 }
