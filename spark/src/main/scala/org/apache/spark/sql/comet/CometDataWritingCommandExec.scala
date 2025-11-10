@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.datasources.{ExecutedWriteSummary, WriteFi
 
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
-case class CometParquetDataWritingCommandExec(
+case class CometDataWritingCommandExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
@@ -41,7 +41,6 @@ case class CometParquetDataWritingCommandExec(
   override def nodeName: String = "CometParquetDataWritingCommandExec"
 
   override def executeWrite(writeFilesSpec: WriteFilesSpec): RDD[WriterCommitMessage] = {
-    logInfo("execute comet write")
     val rdd = child.executeColumnar()
     rdd.map { _ =>
       WriteTaskResult(EmptyTaskCommitMessage, ExecutedWriteSummary(Set.empty, Seq.empty))
@@ -53,7 +52,7 @@ case class CometParquetDataWritingCommandExec(
 
   override def equals(obj: Any): Boolean = {
     obj match {
-      case other: CometParquetDataWritingCommandExec =>
+      case other: CometDataWritingCommandExec =>
         this.child == other.child && this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ => false

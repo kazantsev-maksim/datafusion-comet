@@ -48,7 +48,6 @@ message Operator {
     HashJoin hash_join = 109;
     Window window = 110;
     NativeScan native_scan = 111;
-    WriteParquetFiles write_parquet_files = 112;
   }
 }
 
@@ -176,14 +175,6 @@ message ParquetWriteOptions {
 enum SaveMode {
   Append = 0;
   Overwrite = 1;
-}
-
-message WriteParquetFiles {
-  string output_base_path = 1;
-  repeated SparkStructField output_schema = 2;
-  repeated PartitionColumn partition_columns = 3;
-  ParquetWriteOptions parquet_write_options = 4;
-  SaveMode save_mode = 5;
 }
 
 enum AggregateMode {
