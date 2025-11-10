@@ -21,15 +21,33 @@ package org.apache.comet.serde.operator
 
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
-
+import org.apache.spark.sql.execution.datasources.InsertIntoHadoopFsRelationCommand
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WRITING_ENABLED)
+
+  override def getSupportLevel(operator: DataWritingCommandExec): SupportLevel = {
+    if (!operator.cmd.isInstanceOf[InsertIntoHadoopFsRelationCommand]) {
+      return Unsupported(Some("Comet support only InsertIntoHadoopFsRelationCommand"))
+    }
+    val writingCmd = operator.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
+    if (writingCmd.bucketSpec.isDefined) {
+      return Unsupported(Some("Comet does not support bucketing"))
+    }
+    if (!writingCmd.fileFormat.isInstanceOf[ParquetFileFormat]) {
+      return Unsupported(Some("Comet support only parquet file format to write"))
+    }
+    if (writingCmd.mode != SaveMode.Overwrite || writingCmd.mode != SaveMode.Append) {
+      return Unsupported(Some("Comet support only overwrite and append write mode"))
+    }
+    Compatible(None)
+  }
 
   override def convert(
       op: DataWritingCommandExec,

@@ -33,6 +33,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -71,7 +72,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
       classOf[SortExec] -> CometSort,
-      classOf[LocalTableScanExec] -> CometLocalTableScan)
+      classOf[LocalTableScanExec] -> CometLocalTableScan,
+      classOf[DataWritingCommandExec] -> CometDataWritingCommand)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,

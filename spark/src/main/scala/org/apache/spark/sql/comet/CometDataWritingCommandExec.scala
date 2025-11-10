@@ -38,8 +38,6 @@ case class CometDataWritingCommandExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
 
-  override def nodeName: String = "CometParquetDataWritingCommandExec"
-
   override def executeWrite(writeFilesSpec: WriteFilesSpec): RDD[WriterCommitMessage] = {
     val rdd = child.executeColumnar()
     rdd.map { _ =>
