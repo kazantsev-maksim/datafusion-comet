@@ -21,41 +21,54 @@ package org.apache.spark.sql.comet
 
 import java.util.Objects
 
-import org.apache.spark.internal.io.FileCommitProtocol.EmptyTaskCommitMessage
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.connector.write.WriterCommitMessage
+import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.catalog.BucketSpec
+import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
+import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.datasources.{ExecutedWriteSummary, WriteFilesSpec, WriteTaskResult}
-
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.spark.sql.execution.datasources.{FileFormat, V1WriteCommand}
 
 case class CometDataWritingCommandExec(
-    override val nativeOp: Operator,
-    override val originalPlan: SparkPlan,
-    override val output: Seq[Attribute],
-    child: SparkPlan,
-    override val serializedPlanOpt: SerializedPlan)
-    extends CometUnaryExec {
-
-  override def executeWrite(writeFilesSpec: WriteFilesSpec): RDD[WriterCommitMessage] = {
-    val rdd = child.executeColumnar()
-    rdd.map { _ =>
-      WriteTaskResult(EmptyTaskCommitMessage, ExecutedWriteSummary(Set.empty, Seq.empty))
-    }
-  }
-
-  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
-    this.copy(child = newChild)
+    override val fileFormat: FileFormat,
+    override val bucketSpec: Option[BucketSpec],
+    override val partitionColumns: Seq[Attribute],
+    override val staticPartitions: TablePartitionSpec,
+    override val outputColumnNames: Seq[String],
+    override val options: Map[String, String],
+    override val query: LogicalPlan)
+    extends V1WriteCommand
+    with CometPlan {
 
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometDataWritingCommandExec =>
-        this.child == other.child && this.output == other.output &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.fileFormat == other.fileFormat &&
+        this.bucketSpec == other.bucketSpec &&
+        this.partitionColumns == other.partitionColumns &&
+        this.staticPartitions == other.staticPartitions &&
+        this.outputColumnNames == other.outputColumnNames &&
+        this.options == other.options
       case _ => false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(child, output, serializedPlanOpt)
+  override def hashCode(): Int = Objects.hashCode(
+    fileFormat,
+    bucketSpec,
+    partitionColumns,
+    staticPartitions,
+    outputColumnNames,
+    options)
+
+  override def run(sparkSession: SparkSession, child: SparkPlan): Seq[Row] = Seq.empty
+
+  override protected def withNewChildInternal(newChild: LogicalPlan): LogicalPlan =
+    this.copy(query = newChild)
+
+  override protected def doExecute(): RDD[InternalRow] = sparkContext.emptyRDD
+
+  override def requiredOrdering: Seq[SortOrder] = Seq.empty
 }

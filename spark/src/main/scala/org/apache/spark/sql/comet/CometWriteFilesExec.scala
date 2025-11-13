@@ -23,17 +23,18 @@ import java.util.Objects
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-case class CometParquetWriteFilesExec(
+import org.apache.comet.serde.OperatorOuterClass.Operator
+
+case class CometWriteFilesExec(
+    override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
-    child: SparkPlan)
-    extends CometExec
-    with UnaryExecNode {
-
-  override def nodeName: String = "CometParquetWriteFilesExec"
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     child.executeColumnar()
@@ -44,7 +45,7 @@ case class CometParquetWriteFilesExec(
 
   override def equals(obj: Any): Boolean = {
     obj match {
-      case other: CometParquetWriteFilesExec =>
+      case other: CometWriteFilesExec =>
         this.child == other.child && this.output == other.output
       case _ => false
     }
