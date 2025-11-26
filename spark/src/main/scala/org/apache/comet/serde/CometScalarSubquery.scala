@@ -19,33 +19,33 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.execution.FilterExec
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.execution.ScalarSubquery
 
-import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
-object CometFilter extends CometOperatorSerde[FilterExec] {
-
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_FILTER_ENABLED)
-
+object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
   override def convert(
-      op: FilterExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val cond = exprToProto(op.condition, op.child.output)
+      expr: ScalarSubquery,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (supportedDataType(expr.dataType)) {
+      val dataType = serializeDataType(expr.dataType)
+      if (dataType.isEmpty) {
+        withInfo(expr, s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
+        return None
+      }
 
-    if (cond.isDefined && childOp.nonEmpty) {
-      val filterBuilder = OperatorOuterClass.Filter
+      val builder = ExprOuterClass.Subquery
         .newBuilder()
-        .setPredicate(cond.get)
-      Some(builder.setFilter(filterBuilder).build())
+        .setId(expr.exprId.id)
+        .setDatatype(dataType.get)
+      Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
     } else {
-      withInfo(op, op.condition, op.child)
+      withInfo(expr, s"Unsupported data type: ${expr.dataType}")
       None
     }
-  }
 
+  }
 }

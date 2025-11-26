@@ -19,31 +19,33 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.execution.LocalLimitExec
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BloomFilterMightContain}
 
-import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
-object CometLocalLimit extends CometOperatorSerde[LocalLimitExec] {
-
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED)
+object CometBloomFilterMightContain extends CometExpressionSerde[BloomFilterMightContain] {
 
   override def convert(
-      op: LocalLimitExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    if (childOp.nonEmpty) {
-      // LocalLimit doesn't use offset, but it shares same operator serde class.
-      // Just set it to zero.
-      val limitBuilder = OperatorOuterClass.Limit
-        .newBuilder()
-        .setLimit(op.limit)
-        .setOffset(0)
-      Some(builder.setLimit(limitBuilder).build())
+      expr: BloomFilterMightContain,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+
+    val bloomFilter = expr.left
+    val value = expr.right
+    val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs, binding)
+    val valueExpr = exprToProtoInternal(value, inputs, binding)
+    if (bloomFilterExpr.isDefined && valueExpr.isDefined) {
+      val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
+      builder.setBloomFilter(bloomFilterExpr.get)
+      builder.setValue(valueExpr.get)
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setBloomFilterMightContain(builder)
+          .build())
     } else {
-      withInfo(op, "No child operator")
+      withInfo(expr, bloomFilter, value)
       None
     }
   }

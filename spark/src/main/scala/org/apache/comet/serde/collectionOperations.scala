@@ -19,31 +19,26 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.execution.GlobalLimitExec
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse}
+import org.apache.spark.sql.types.ArrayType
 
-import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.ExprOuterClass.Expr
 
-object CometGlobalLimit extends CometOperatorSerde[GlobalLimitExec] {
+object CometReverse extends CometScalarFunction[Reverse]("reverse") {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED)
-
-  override def convert(
-      op: GlobalLimitExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    if (childOp.nonEmpty) {
-      val limitBuilder = OperatorOuterClass.Limit.newBuilder()
-
-      limitBuilder.setLimit(op.limit).setOffset(op.offset)
-
-      Some(builder.setLimit(limitBuilder).build())
+  override def getSupportLevel(expr: Reverse): SupportLevel = {
+    if (expr.child.dataType.isInstanceOf[ArrayType]) {
+      CometArrayReverse.getSupportLevel(expr)
     } else {
-      withInfo(op, "No child operator")
-      None
+      Compatible()
     }
+  }
 
+  override def convert(expr: Reverse, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    if (expr.child.dataType.isInstanceOf[ArrayType]) {
+      CometArrayReverse.convert(expr, inputs, binding)
+    } else {
+      super.convert(expr, inputs, binding)
+    }
   }
 }

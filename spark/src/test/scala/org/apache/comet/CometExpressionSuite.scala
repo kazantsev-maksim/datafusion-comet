@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Literal, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
@@ -72,7 +72,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReasons(
         "select * from tbl order by 1, 2",
         Set(
@@ -94,7 +96,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
@@ -118,7 +122,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
@@ -150,19 +156,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("coalesce should return correct datatype") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT coalesce(cast(_18 as date), cast(_19 as date), _20) FROM tbl")
-        }
-      }
-    }
-  }
-
   test("decimals divide by zero") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
@@ -185,13 +178,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Integral Division Overflow Handling Matches Spark Behavior") {
     withTable("t1") {
-      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-        val value = Long.MinValue
-        sql("create table t1(c1 long, c2 short) using parquet")
-        sql(s"insert into t1 values($value, -1)")
-        val res = sql("select c1 div c2 from t1 order by c1")
-        checkSparkAnswerAndOperator(res)
-      }
+      val value = Long.MinValue
+      sql("create table t1(c1 long, c2 short) using parquet")
+      sql(s"insert into t1 values($value, -1)")
+      val res = sql("select c1 div c2 from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
     }
   }
 
@@ -312,7 +303,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
-            checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
+            checkSparkAnswerMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
           if (isSpark40Plus) {
             assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
           } else {
@@ -359,7 +350,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
-            checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
+            checkSparkAnswerMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
           if (isSpark40Plus) {
             assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
             assert(cometErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
@@ -466,20 +457,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test coalesce lazy eval") {
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val data = Seq((9999999999999L, 0))
-      withParquetTable(data, "t1") {
-        val res = spark.sql("""
-            |SELECT coalesce(_1, CAST(_1 AS TINYINT)) from t1;
-            |  """.stripMargin)
-        checkSparkAnswerAndOperator(res)
-      }
-    }
-  }
-
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
@@ -517,15 +494,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(sql("select substring(col, 0) from t"))
         checkSparkAnswerAndOperator(sql("select substring(col, -1) from t"))
       }
-    }
-  }
-
-  test("string with coalesce") {
-    withParquetTable(
-      (0 until 10).map(i => (i.toString, if (i > 5) None else Some((i + 100).toString))),
-      "tbl") {
-      checkSparkAnswerAndOperator(
-        "SELECT coalesce(_1), coalesce(_1, 1), coalesce(null, _1), coalesce(null, 1), coalesce(_2, _1), coalesce(null) FROM tbl")
     }
   }
 
@@ -619,7 +587,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast timestamp and timestamp_ntz") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -641,7 +609,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast timestamp and timestamp_ntz to string") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -663,7 +631,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast timestamp and timestamp_ntz to long, date") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -753,7 +721,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with timestamp_ntz") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -1346,13 +1314,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "asin",
           "atan",
           "cos",
+          "cosh",
           "exp",
           "ln",
           "log10",
           "log2",
           "sin",
+          "sinh",
           "sqrt",
-          "tan")) {
+          "tan",
+          "tanh",
+          "cot")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
@@ -1431,9 +1403,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary,
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf("parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
@@ -1631,30 +1601,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("case_when") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(id int) using parquet")
-          sql(s"insert into $table values(1), (NULL), (2), (2), (3), (3), (4), (5), (NULL)")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE WHEN id > 2 THEN 3333 WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE WHEN id > 2 THEN NULL WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN 1 THEN 1111 WHEN 2 THEN 2222 ELSE 3333 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN 1 THEN 1111 WHEN 2 THEN 2222 ELSE NULL END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN 1 THEN 1111 WHEN 2 THEN 2222 WHEN 3 THEN 3333 WHEN 4 THEN 4444 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN NULL THEN 0 WHEN 1 THEN 1111 WHEN 2 THEN 2222 ELSE 3333 END FROM $table")
-        }
-      }
-    }
-  }
-
   test("not") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1676,24 +1622,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(col1 int) using parquet")
           sql(s"insert into $table values(1), (2), (3), (3)")
           checkSparkAnswerAndOperator(s"SELECT negative(col1), -(col1) FROM $table")
-        }
-      }
-    }
-  }
-
-  test("conditional expressions") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test1"
-        withTable(table) {
-          sql(s"create table $table(c1 int, c2 string, c3 int) using parquet")
-          sql(
-            s"insert into $table values(1, 'comet', 1), (2, 'comet', 3), (null, 'spark', 4)," +
-              " (null, null, 4), (2, 'spark', 3), (2, 'comet', 3)")
-          checkSparkAnswerAndOperator(s"SELECT if (c1 < 2, 1111, 2222) FROM $table")
-          checkSparkAnswerAndOperator(s"SELECT if (c1 < c3, 1111, 2222) FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT if (c2 == 'comet', 'native execution', 'non-native execution') FROM $table")
         }
       }
     }
@@ -1752,7 +1680,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.getExprAllowIncompatConfigKey(classOf[FromUnixTime]) -> "true") {
         val table = "test"
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1970,7 +1898,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(
           (
             s"select * from $table LIMIT 10",
-            Set("spark.comet.exec.collectLimit.enabled is false")))
+            Set("Native support for operator CollectLimitExec is disabled. " +
+              "Set spark.comet.exec.collectLimit.enabled=true to enable it")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
@@ -1984,9 +1913,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hash functions") {
     Seq(true, false).foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
@@ -2013,7 +1940,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> enabled.toString,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
@@ -2022,7 +1948,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val expectedDivideByZeroError =
         "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
 
-      checkSparkMaybeThrows(sql(query)) match {
+      checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
           assert(sparkException.getMessage.contains(expectedDivideByZeroError))
           assert(cometException.getMessage.contains(expectedDivideByZeroError))
@@ -2091,9 +2017,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val whitespaceChars = " \t\r\n"
     val timestampPattern = "0123456789/:T" + whitespaceChars
     Seq(true, false).foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
@@ -2168,13 +2092,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> enabled.toString,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
     def checkOverflow(query: String, dtype: String): Unit = {
-      checkSparkMaybeThrows(sql(query)) match {
+      checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
           assert(sparkException.getMessage.contains(dtype + " overflow"))
           assert(cometException.getMessage.contains(dtype + " overflow"))
@@ -2231,7 +2154,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
           SQLConf.ANSI_ENABLED.key -> "true",
-          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           for (n <- Seq("2147483647", "-2147483648")) {
@@ -2700,7 +2622,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ListExtract") {
     def assertBothThrow(df: DataFrame): Unit = {
-      checkSparkMaybeThrows(df) match {
+      checkSparkAnswerMaybeThrows(df) match {
         case (Some(_), Some(_)) => ()
         case (spark, comet) =>
           fail(
@@ -2715,7 +2637,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         Seq(true, false).foreach { ansiEnabled =>
           withSQLConf(
-            CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
             SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
             // Prevent the optimizer from collapsing an extract value of a create array
             SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
@@ -2792,9 +2713,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test integral divide") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path1 = new Path(dir.toURI.toString, "test1.parquet")
@@ -2850,7 +2769,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
@@ -2869,7 +2788,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
@@ -2889,7 +2808,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
@@ -2909,7 +2828,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("Division by zero"))
@@ -2929,7 +2848,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("Division by zero"))
@@ -2950,7 +2869,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 |  from tbl
                 |  """.stripMargin)
 
-          checkSparkMaybeThrows(res) match {
+          checkSparkAnswerMaybeThrows(res) match {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
               assert(cometException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
@@ -2985,7 +2904,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           Seq(true, false).foreach { ansi =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
-              checkSparkMaybeThrows(res) match {
+              checkSparkAnswerMaybeThrows(res) match {
                 case (Some(sparkException), Some(cometException)) =>
                   assert(sparkException.getMessage.contains("ARITHMETIC_OVERFLOW"))
                   assert(cometException.getMessage.contains("ARITHMETIC_OVERFLOW"))
