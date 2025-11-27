@@ -15,4 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod filter;
+use std::sync::Arc;
+use arrow::array::ArrayRef;
+use arrow::datatypes::DataType;
+use datafusion::common::Result;
+
+pub type SparkLambdaFunction =
+    Arc<dyn Fn(&[ArrayRef]) -> Result<ArrayRef> + Send + Sync>;
+
+#[derive(Debug, Clone)]
+pub struct LambdaArgument {
+    name: String,
+    data_type: DataType,
+    nullable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LambdaFunction {
+    function: SparkLambdaFunction,
+    arguments: Vec<LambdaArgument>,
+    return_type: DataType,
+}

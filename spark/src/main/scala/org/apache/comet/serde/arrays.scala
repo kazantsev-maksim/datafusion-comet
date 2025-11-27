@@ -533,9 +533,6 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with ArraysBas
     if (!isTypeSupported(dataType)) {
       return Unsupported(Some(s"Data type not supported: $dataType."))
     }
-    if (expr.function.asInstanceOf[LambdaFunction].arguments.length != 1) {
-      return Unsupported(Some("Comet only supports lambda function with one input argument."))
-    }
     Compatible(None)
   }
 

@@ -15,11 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::logical_expr::Signature;
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct SparkLambdaFilter {
-    signature: Signature,
-    aliases: Vec<String>,
-}
-
+mod spark_lambda_function;
