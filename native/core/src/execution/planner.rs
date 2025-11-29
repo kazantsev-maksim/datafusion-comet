@@ -2360,6 +2360,18 @@ impl PhysicalPlanner {
             .ok()
     }
 
+    pub fn create_spark_lambda_expr(&self, spark_lambda: &spark_expression::LambdaFunction) {
+        let arguments: Vec<LambdaArgument> = spark_lambda.arguments
+            .iter()
+            .map(|arg| LambdaArgument {
+                name: arg.name.clone(),
+                data_type: convert_spark_type(&arg.data_type)?,
+                nullable: arg.nullable,
+            })
+            .collect::<Result<_>>()?;
+
+    }
+
     /// Create a DataFusion physical partitioning from Spark physical partitioning
     fn create_partitioning(
         &self,

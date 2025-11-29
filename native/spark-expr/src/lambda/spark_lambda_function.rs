@@ -23,16 +23,32 @@ use datafusion::common::Result;
 pub type SparkLambdaFunction =
     Arc<dyn Fn(&[ArrayRef]) -> Result<ArrayRef> + Send + Sync>;
 
-#[derive(Debug, Clone)]
 pub struct LambdaArgument {
     name: String,
     data_type: DataType,
     nullable: bool,
 }
 
-#[derive(Debug, Clone)]
 pub struct LambdaFunction {
     function: SparkLambdaFunction,
     arguments: Vec<LambdaArgument>,
     return_type: DataType,
+}
+
+impl LambdaFunction {
+    pub fn new(
+        function: SparkLambdaFunction,
+        arguments: Vec<LambdaArgument>,
+        return_type: DataType
+    ) -> Self {
+        Self {
+            function,
+            arguments,
+            return_type,
+        }
+    }
+
+    pub fn apply(&self, inputs: &[ArrayRef]) -> Result<ArrayRef> {
+        (self.function)(inputs)
+    }
 }
