@@ -48,6 +48,8 @@ use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::url::parse_url::ParseUrl;
+use datafusion_spark::function::url::try_parse_url::TryParseUrl;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
@@ -335,6 +337,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(ParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(TryParseUrl::default()));
 }
 
 /// Prepares arrow arrays for output.
