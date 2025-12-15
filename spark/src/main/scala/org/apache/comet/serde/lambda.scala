@@ -37,14 +37,14 @@ object CometLambdaFunction extends CometExpressionSerde[LambdaFunction] with Lam
     val conditionExprProto = exprToProtoInternal(expr.function, inputs, binding)
     val argsExprProto = expr.arguments.map(arg => lambdaVariable2Proto(arg.name, arg.dataType))
     if (argsExprProto.forall(_.isDefined) && conditionExprProto.isDefined) {
-      val LambdaFunctionBuilder = ExprOuterClass.LambdaFunction
+      val lambdaFunctionBuilder = ExprOuterClass.LambdaFunction
         .newBuilder()
         .setCondition(conditionExprProto.get)
         .addAllArgs(argsExprProto.map(_.get.build()).asJava)
       Some(
         ExprOuterClass.Expr
           .newBuilder()
-          .setLambdaFunction(LambdaFunctionBuilder)
+          .setLambdaFunction(lambdaFunctionBuilder)
           .build())
     } else {
       withInfo(expr, expr.children: _*)
