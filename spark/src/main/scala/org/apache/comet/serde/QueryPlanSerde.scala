@@ -64,6 +64,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ElementAt] -> CometElementAt,
     classOf[Flatten] -> CometFlatten,
     classOf[GetArrayItem] -> CometGetArrayItem,
+    classOf[Size] -> CometSize,
     classOf[ArrayFilter] -> CometArrayFilter)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -132,6 +133,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
     classOf[GetArrayStructFields] -> CometGetArrayStructFields,
     classOf[GetStructField] -> CometGetStructField,
+    classOf[JsonToStructs] -> CometJsonToStructs,
     classOf[StructsToJson] -> CometStructsToJson)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(

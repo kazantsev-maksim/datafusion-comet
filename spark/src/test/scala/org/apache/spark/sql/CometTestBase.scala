@@ -89,6 +89,14 @@ abstract class CometTestBase
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
     conf.set(CometConf.getExprAllowIncompatConfigKey("SortOrder"), "true")
+    // For spark 4.0 tests, we need limit the thread threshold to avoid OOM, see:
+    //  https://github.com/apache/datafusion-comet/issues/2965
+    conf.set(
+      "spark.sql.shuffleExchange.maxThreadThreshold",
+      sys.env.getOrElse("SPARK_TEST_SQL_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD", "1024"))
+    conf.set(
+      "spark.sql.resultQueryStage.maxThreadThreshold",
+      sys.env.getOrElse("SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD", "1024"))
     conf
   }
 
@@ -116,7 +124,6 @@ abstract class CometTestBase
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
-
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
@@ -694,7 +701,7 @@ abstract class CometTestBase
 
     val idGenerator = new AtomicInteger(0)
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val data = (begin until end).map { i =>
       if (nullEnabled && rand.nextBoolean()) {
         None
@@ -788,7 +795,7 @@ abstract class CometTestBase
       rowGroupSize = rowGroupSize)
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until n).map { i =>
       if (rand.nextBoolean()) {
         None
@@ -842,7 +849,7 @@ abstract class CometTestBase
       rowGroupSize = rowGroupSize)
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until n).map { i =>
       if (rand.nextBoolean()) {
         None
@@ -1240,7 +1247,7 @@ abstract class CometTestBase
     val schema = MessageTypeParser.parseMessageType(schemaStr)
     val writer = createParquetWriter(schema, path, dictionaryEnabled = true)
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until total).map { i =>
       // use a single value for the first page, to make sure dictionary encoding kicks in
       if (rand.nextBoolean()) None
