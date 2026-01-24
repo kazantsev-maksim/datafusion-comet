@@ -85,9 +85,10 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
-    LambdaVariable lambda_variable = 65;
-    LambdaFunction lambda_function = 66;
-    FromJson from_json = 89;
+    UnixTimestamp unix_timestamp = 65;
+    FromJson from_json = 66;
+    LambdaVariable lambda_variable = 67;
+    LambdaFunction lambda_function = 68;
   }
 }
 
@@ -302,6 +303,11 @@ message Minute {
 }
 
 message Second {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message UnixTimestamp {
   Expr child = 1;
   string timezone = 2;
 }
