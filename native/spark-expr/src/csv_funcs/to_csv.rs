@@ -162,47 +162,54 @@ pub fn to_csv_inner(
                     csv_string.push_str(&write_options.delimiter);
                 }
                 if column.is_null(row_idx) {
-                    if write_options.quote_all {
-                        csv_string.push(quote_char);
-                    }
-                    csv_string.push_str(&write_options.null_value);
-                    if write_options.quote_all {
-                        csv_string.push(quote_char);
-                    }
+                    write_field(
+                        &write_options.null_value,
+                        quote_char,
+                        escape_char,
+                        &write_options.delimiter,
+                        write_options.quote_all,
+                        false, // null values don't get trimmed
+                        false,
+                        &mut csv_string,
+                    );
                 } else {
-                    let mut value = column.value(row_idx);
+                    let value = column.value(row_idx);
                     let is_string_field = is_string[col_idx];
 
-                    if is_string_field {
+                    // Apply trimming only for string fields
+                    if is_string_field
+                        && (write_options.ignore_leading_white_space
+                        || write_options.ignore_trailing_white_space)
+                    {
+                        let mut trimmed_value = value;
                         if write_options.ignore_leading_white_space {
-                            value = value.trim_start();
+                            trimmed_value = trimmed_value.trim_start();
                         }
                         if write_options.ignore_trailing_white_space {
-                            value = value.trim_end();
+                            trimmed_value = trimmed_value.trim_end();
                         }
-                    }
 
-                    let needs_quoting = write_options.quote_all
-                        || (is_string_field
-                            && (value.contains(&write_options.delimiter)
-                                || value.contains(quote_char)
-                                || value.contains('\n')
-                                || value.contains('\r'))
-                            || value.is_empty());
-
-                    let needs_escaping = needs_quoting
-                        && (value.contains(quote_char) || value.contains(escape_char));
-
-                    if needs_quoting {
-                        csv_string.push(quote_char);
-                    }
-                    if needs_escaping {
-                        escape_value(value, quote_char, escape_char, &mut csv_string);
+                        write_field(
+                            trimmed_value,
+                            quote_char,
+                            escape_char,
+                            &write_options.delimiter,
+                            write_options.quote_all,
+                            is_string_field,
+                            true,
+                            &mut csv_string,
+                        );
                     } else {
-                        csv_string.push_str(value);
-                    }
-                    if needs_quoting {
-                        csv_string.push(quote_char);
+                        write_field(
+                            value,
+                            quote_char,
+                            escape_char,
+                            &write_options.delimiter,
+                            write_options.quote_all,
+                            is_string_field,
+                            true,
+                            &mut csv_string,
+                        );
                     }
                 }
             }
@@ -212,12 +219,101 @@ pub fn to_csv_inner(
     Ok(Arc::new(builder.finish()))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn write_field(
+    value: &str,
+    quote_char: char,
+    escape_char: char,
+    delimiter: &str,
+    quote_all: bool,
+    is_string_field: bool,
+    is_value: bool,
+    output: &mut String,
+) {
+    if is_value && value.is_empty() {
+        output.push(quote_char);
+        output.push(quote_char);
+        return;
+    }
+
+    let needs_quoting = if quote_all {
+        // When quote_all is enabled, quote everything except null values
+        is_value
+    } else {
+        // Check if value needs quoting based on content
+        needs_quoting_check(value, quote_char, delimiter, is_string_field, is_value)
+    };
+
+    if needs_quoting {
+        output.push(quote_char);
+        escape_and_write(value, quote_char, escape_char, output);
+        output.push(quote_char);
+    } else {
+        output.push_str(value);
+    }
+}
+
 #[inline]
-fn escape_value(value: &str, quote_char: char, escape_char: char, output: &mut String) {
-    for ch in value.chars() {
-        if ch == quote_char || ch == escape_char {
-            output.push(escape_char);
+fn needs_quoting_check(
+    value: &str,
+    quote_char: char,
+    delimiter: &str,
+    is_string_field: bool,
+    is_value: bool,
+) -> bool {
+    if !is_value {
+        // Null representations don't get quoted unless they contain special chars
+        return value.contains(delimiter)
+            || value.contains(quote_char)
+            || value.contains('\n')
+            || value.contains('\r');
+    }
+
+    // Empty strings are always quoted (handled separately above)
+    if value.is_empty() {
+        return true;
+    }
+
+    // Check for special characters
+    if value.contains(delimiter)
+        || value.contains(quote_char)
+        || value.contains('\n')
+        || value.contains('\r')
+    {
+        return true;
+    }
+
+    // For string fields, check for leading/trailing whitespace
+    // This matches univocity behavior of quoting values with surrounding whitespace
+    if is_string_field {
+        if let Some(first_char) = value.chars().next() {
+            if first_char.is_whitespace() {
+                return true;
+            }
         }
-        output.push(ch);
+        if let Some(last_char) = value.chars().last() {
+            if last_char.is_whitespace() {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[inline]
+fn escape_and_write(value: &str, quote_char: char, escape_char: char, output: &mut String) {
+    for ch in value.chars() {
+        if ch == quote_char {
+            // Always escape quote character
+            output.push(escape_char);
+            output.push(quote_char);
+        } else if ch == escape_char && escape_char != quote_char {
+            // Escape the escape character itself (only if it's different from quote)
+            output.push(escape_char);
+            output.push(escape_char);
+        } else {
+            output.push(ch);
+        }
     }
 }

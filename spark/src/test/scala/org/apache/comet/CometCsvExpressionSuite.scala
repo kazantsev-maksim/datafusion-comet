@@ -23,11 +23,11 @@ import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.StructsToCsv
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.StringType
+import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -192,6 +192,110 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
             to_csv(
               struct(col("col"), lit(1), lit("test"), lit(null).cast(StringType)),
               Map("delimiter" -> ",", "quoteAll" -> "true").asJava)))
+      }
+    }
+  }
+
+  test("to_csv - fuzz test with random primitive data") {
+    // Generate random data with various primitive types
+    val numIterations = 10
+    val numRows = 20
+
+    for (seed <- 1 to numIterations) {
+      val random = new Random(seed)
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, s"test_$seed.parquet")
+        val filename = path.toString
+
+        // Generate schema with primitive types only (excluding incompatible types)
+        val compatibleTypes = Seq(
+          DataTypes.BooleanType,
+          DataTypes.ByteType,
+          DataTypes.ShortType,
+          DataTypes.IntegerType,
+          DataTypes.LongType,
+          DataTypes.FloatType,
+          DataTypes.DoubleType,
+          DataTypes.createDecimalType(10, 2),
+          DataTypes.StringType)
+
+        val schema = StructType(compatibleTypes.zipWithIndex.map { case (dt, i) =>
+          StructField(s"c$i", dt, nullable = true)
+        })
+
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val dataGenOptions = DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateNaN = true,
+            generateInfinity = true)
+          ParquetGenerator
+            .makeParquetFile(random, spark, filename, schema, numRows, dataGenOptions)
+        }
+
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
+          val df = spark.read.parquet(filename)
+          val structCols = df.columns.map(col)
+
+          // Test with default options
+          checkSparkAnswerAndOperator(df.select(to_csv(struct(structCols: _*))))
+
+          // Test with quoteAll
+          checkSparkAnswerAndOperator(
+            df.select(to_csv(struct(structCols: _*), Map("quoteAll" -> "true").asJava)))
+        }
+      }
+    }
+  }
+
+  test("to_csv - fuzz test with random CSV write options") {
+    val table = "t_fuzz_options"
+    val random = new Random(42)
+
+    // Generate various delimiters to test
+    val delimiters = Seq(",", ";", "|", "\t", ":", "#", "~")
+    val quotes = Seq("\"", "'")
+    val escapes = Seq("\\", "/", "!")
+    val nullValues = Seq("", "NULL", "N/A", "null", "\\N", "<null>")
+
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+      CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
+      withTable(table) {
+        sql(s"create table $table(str_col string, int_col int, bool_col boolean) using parquet")
+        sql(s"insert into $table values('hello', 1, true)")
+        sql(s"insert into $table values('world', 2, false)")
+        sql(s"insert into $table values(null, null, null)")
+        sql(s"insert into $table values('', 0, true)")
+        sql(s"insert into $table values('has,comma', 42, false)")
+        sql(s"""insert into $table values('has"quote', 99, true)""")
+        sql(s"insert into $table values('has\nnewline', -1, false)")
+        sql(s"insert into $table values('  spaces  ', 100, true)")
+
+        val df = sql(s"select * from $table")
+
+        // Fuzz test with random combinations of options
+        for (_ <- 1 to 20) {
+          val delimiter = delimiters(random.nextInt(delimiters.length))
+          val quote = quotes(random.nextInt(quotes.length))
+          val escape = escapes(random.nextInt(escapes.length))
+          val nullValue = nullValues(random.nextInt(nullValues.length))
+          val quoteAll = random.nextBoolean()
+          val ignoreLeading = random.nextBoolean()
+          val ignoreTrailing = random.nextBoolean()
+
+          val options = Map(
+            "delimiter" -> delimiter,
+            "quote" -> quote,
+            "escape" -> escape,
+            "nullValue" -> nullValue,
+            "quoteAll" -> quoteAll.toString,
+            "ignoreLeadingWhiteSpace" -> ignoreLeading.toString,
+            "ignoreTrailingWhiteSpace" -> ignoreTrailing.toString).asJava
+
+          checkSparkAnswerAndOperator(
+            df.select(to_csv(struct(col("str_col"), col("int_col"), col("bool_col")), options)))
+        }
       }
     }
   }
