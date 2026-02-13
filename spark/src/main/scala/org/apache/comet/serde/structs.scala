@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -276,6 +277,9 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
   private def options2Proto(
       options: Map[String, String],
       timeZoneId: Option[String]): ExprOuterClass.CsvWriteOptions = {
+    val nullAsQuotedEmptyString =
+      SQLConf.get
+        .getConf(SQLConf.LEGACY_NULL_VALUE_WRITTEN_AS_QUOTED_EMPTY_STRING_CSV)
     ExprOuterClass.CsvWriteOptions
       .newBuilder()
       .setDelimiter(options.getOrElse("delimiter", ","))
@@ -295,6 +299,7 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
         .get("quoteAll")
         .flatMap(quoteAll => Try(quoteAll.toBoolean).toOption)
         .getOrElse(false))
+      .setNullAsQuotedEmptyString(nullAsQuotedEmptyString)
       .build()
   }
 }

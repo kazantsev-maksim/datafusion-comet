@@ -291,6 +291,7 @@ message CsvWriteOptions {
   bool ignore_leading_white_space = 6;
   bool ignore_trailing_white_space = 7;
   string timezone = 8;
+  bool null_as_quoted_empty_string = 9;
 }
 
 enum BinaryOutputStyle {
