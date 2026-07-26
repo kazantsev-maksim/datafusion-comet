@@ -22,11 +22,7 @@
 
 use arrow::array::{Array, ArrayRef, GenericListArray, NullBufferBuilder, OffsetSizeTrait};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::{
-    DataType,
-    DataType::{FixedSizeList, LargeList, List, Null},
-    Field, FieldRef,
-};
+use arrow::datatypes::{ArrowNativeType, DataType, DataType::{FixedSizeList, LargeList, List, Null}, Field, FieldRef};
 use datafusion::common::cast::{as_large_list_array, as_list_array};
 use datafusion::common::{exec_err, utils::take_function_args, Result};
 use datafusion::logical_expr::{
@@ -133,9 +129,9 @@ fn spark_flatten_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
                     let inner = as_large_list_array(&values)?;
                     let nulls = spark_flatten_nulls(outer, inner);
                     let (inner_field, inner_offsets, inner_values, _) = inner.clone().into_parts();
-                    let offsets = get_offsets_for_flatten::<i64, i32>(inner_offsets, &offsets);
+                    let offsets = get_offsets_for_flatten::<i32, i64>(inner_offsets, &offsets);
                     let flattened_array =
-                        GenericListArray::<i64>::new(inner_field, offsets, inner_values, nulls);
+                        GenericListArray::<i32>::new(inner_field, offsets, inner_values, nulls);
 
                     Ok(Arc::new(flattened_array) as ArrayRef)
                 }
@@ -178,23 +174,35 @@ fn spark_flatten_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
     }
 }
 
-fn spark_flatten_nulls<O: OffsetSizeTrait, P: OffsetSizeTrait>(
-    outer: &GenericListArray<P>,
-    inner: &GenericListArray<O>,
+fn spark_flatten_nulls<O1: OffsetSizeTrait, O2: OffsetSizeTrait>(
+    outer: &GenericListArray<O1>,
+    inner: &GenericListArray<O2>,
 ) -> Option<NullBuffer> {
-    let mut nulls = NullBufferBuilder::new(outer.len());
+    let outer_len = outer.len();
+    let mut nulls = NullBufferBuilder::new(outer_len);
     let inner_nulls = inner.nulls();
+    let outer_offsets = outer.offsets();
 
-    for (row, offset_window) in outer.offsets().windows(2).enumerate() {
+    for row in 0..outer_len {
         if outer.is_null(row) {
             nulls.append_null();
             continue;
         }
 
-        let start = offset_window[0].to_usize().unwrap();
-        let end = offset_window[1].to_usize().unwrap();
-        let has_null_subarray =
-            inner_nulls.is_some_and(|n| (start..end).any(|inner_row| n.is_null(inner_row)));
+        let start = outer_offsets[row].to_usize().unwrap();
+        let end = outer_offsets[row + 1].to_usize().unwrap();
+
+        let has_null_subarray = match inner_nulls {
+            Some(n) => {
+                let length = end - start;
+                if length == 0 {
+                    false
+                } else {
+                    n.slice(start, length).null_count() > 0
+                }
+            }
+            None => false,
+        };
 
         if has_null_subarray {
             nulls.append_null();
@@ -206,21 +214,23 @@ fn spark_flatten_nulls<O: OffsetSizeTrait, P: OffsetSizeTrait>(
     nulls.finish()
 }
 
-fn get_offsets_for_flatten<O: OffsetSizeTrait, P: OffsetSizeTrait>(
-    inner_offsets: OffsetBuffer<O>,
-    outer_offsets: &OffsetBuffer<P>,
-) -> OffsetBuffer<O> {
+fn get_offsets_for_flatten<O1: OffsetSizeTrait, O2: OffsetSizeTrait>(
+    inner_offsets: OffsetBuffer<O2>,
+    outer_offsets: &OffsetBuffer<O1>,
+) -> OffsetBuffer<O1> {
     let buffer = inner_offsets.into_inner();
-    let offsets: Vec<O> = outer_offsets
-        .iter()
-        .map(|i| buffer[i.to_usize().unwrap()])
-        .collect();
+    let mut offsets = Vec::with_capacity(outer_offsets.len());
+    for i in outer_offsets.iter() {
+        let idx = i.to_usize().unwrap();
+        let val_usize = buffer[idx].to_usize().unwrap();
+        offsets.push(O1::usize_as(val_usize));
+    }
     OffsetBuffer::new(offsets.into())
 }
 
-fn get_large_offsets_for_flatten<O: OffsetSizeTrait, P: OffsetSizeTrait>(
-    inner_offsets: OffsetBuffer<O>,
-    outer_offsets: &OffsetBuffer<P>,
+fn get_large_offsets_for_flatten<O2: OffsetSizeTrait>(
+    inner_offsets: OffsetBuffer<O2>,
+    outer_offsets: &OffsetBuffer<i64>,
 ) -> OffsetBuffer<i64> {
     let buffer = inner_offsets.into_inner();
     let offsets: Vec<i64> = outer_offsets
