@@ -255,8 +255,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("localTableScan", defaultValue = false)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
-  val COMET_EXEC_OBSERVE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("observe", defaultValue = true)
+  val COMET_EXEC_COLLECT_METRICS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("collectMetrics", defaultValue = true)
 
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")

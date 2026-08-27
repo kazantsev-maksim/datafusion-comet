@@ -23,7 +23,8 @@ import java.util.Objects
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.execution.{CollectMetricsExec, SparkPlan}
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -31,23 +32,57 @@ import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, QueryPlan
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 object CometCollectMetricsExec extends CometOperatorSerde[CollectMetricsExec] {
-  def enabledConfig: Option[ConfigEntry[Boolean]] = Some(CometConf.COMET_EXEC_OBSERVE_ENABLED)
+  def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_COLLECT_METRICS_ENABLED)
+
+  private def extractAggregates(
+      metricExpressions: Seq[NamedExpression]): Seq[AggregateExpression] = {
+    metricExpressions
+      .flatMap(_.collect { case agg: AggregateExpression => agg })
+      .distinct
+  }
+
+  private def rewriteMetricExpressions(
+      metricExpressions: Seq[NamedExpression],
+      aggExpressions: Seq[AggregateExpression]): (Seq[AttributeReference], Seq[Expression]) = {
+    val aggMap =
+      aggExpressions.zipWithIndex.map { case (agg, idx) =>
+        agg -> AttributeReference(s"agg_$idx", agg.dataType, agg.nullable)()
+      }.toMap
+    val aggAttributes = aggExpressions.map(aggMap)
+    val rewritten = metricExpressions.map { expr =>
+      expr.transformDown { case agg: AggregateExpression =>
+        aggMap.getOrElse(agg, agg)
+      }
+    }
+    (aggAttributes, rewritten)
+  }
 
   def convert(
       op: CollectMetricsExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val metricExpressionsProto =
-      op.metricExpressions.map(QueryPlanSerde.exprToProto(_, Seq.empty, binding = false))
-    if (metricExpressionsProto.forall(_.isDefined)) {
-      val collectMetricsBuilder = OperatorOuterClass.CollectMetrics
-        .newBuilder()
-        .setMetricName(op.name)
-        .addAllMetricExpressions(metricExpressionsProto.map(_.get).asJava)
-      Some(builder.setCollectMetrics(collectMetricsBuilder).build())
-    } else {
-      None
+    val aggExprs = extractAggregates(op.metricExpressions)
+    val aggExprsProtos = aggExprs.flatMap(
+      QueryPlanSerde.aggExprToProto(_, op.child.output, binding = false, op.conf))
+    if (aggExprsProtos.length != aggExprs.length) {
+      return None
     }
+    val (aggAttributes, rewrittenExprs) = rewriteMetricExpressions(op.metricExpressions, aggExprs)
+    val metricExprProtos = rewrittenExprs.flatMap(QueryPlanSerde.exprToProto(_, aggAttributes))
+    if (metricExprProtos.length != rewrittenExprs.length) {
+      return None
+    }
+    val collectMetricsProto = OperatorOuterClass.CollectMetrics
+      .newBuilder()
+      .setMetricName(op.name)
+      .addAllAggExprs(aggExprsProtos.asJava)
+      .addAllMetricExprs(metricExprProtos.asJava)
+      .build()
+    Some(
+      builder
+        .setCollectMetrics(collectMetricsProto)
+        .build())
   }
 
   def createExec(

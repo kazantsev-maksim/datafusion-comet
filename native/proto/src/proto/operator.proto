@@ -864,5 +864,6 @@ message Window {
 
 message CollectMetrics {
   string metric_name = 1;
-  repeated spark.spark_expression.Expr metric_expressions = 2;
+  repeated spark.spark_expression.AggExpr agg_exprs = 2;
+  repeated spark.spark_expression.Expr metric_exprs = 3;
 }

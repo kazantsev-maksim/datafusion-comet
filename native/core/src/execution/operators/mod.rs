@@ -38,6 +38,7 @@ pub use sample::SampleExec;
 mod scan;
 mod shuffle_scan;
 mod collect_metrics;
+pub use collect_metrics::CollectMetricsExec;
 
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
